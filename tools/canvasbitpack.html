@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>5-bit packed column canvas compression (ccc5)</title>
+</head>
+<body>
+    <h1>Canvas Compression</h1>
+    
+    <form id="nt_input_form">
+        <label for="full_nt_input">Input full 32x30 nametable</label><br>
+        <textarea id="nt_input" name="nt_input" rows="30" cols="96" placeholder="Input full 32x30 name table. You may leave in commas, $, and spaces, but remove all line breaks. For example: 01 0A 44 9F ... Or: $01 $0A $44 $9F..." style="resize: none;"></textarea><br>
+        <input type="submit" value="Compress">
+    </form>
+    <!--<input type="text" id="full_nt_input" name="full_nt_input" size="96" maxlength="2880" style="height: fit-content; width: 96;">-->
+    <p id="warning"></p><br><br>
+    <form id="orig_nt_display">
+        <input type="checkbox" id="toggle" name="toggle">
+        <label for="toggle">Display Original Nametable</label>
+        <p id="full_nametable_disp"></p>
+    </form>
+    <p id=""></p>
+
+
+    <script src="canvasbitpack.js"></script>
+</body>
+</html>
