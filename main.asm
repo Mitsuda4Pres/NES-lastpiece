@@ -58,6 +58,7 @@ TOTALENTITIES = .sizeof(Entity) * MAXENTITIES   ;He does the sizeof(Entity) * MA
                                                 ;enough space on zeropage to handle objects on screen quickly
 buttonflag: .res 1
 spritemem:  .res 2
+ptr:        .res 2
 
 .segment "CODE"
 
@@ -129,8 +130,8 @@ PALETTELOAD:
     STA $2006           ;PPUADDR      we are using $2000 for graphics memory
     LDA #$00
     STA $2006           ;PPUADDR
-    LDY #$08        ;outside loop index for 2KB
-    LDX #$00        ;inside loop indexs
+    LDY #$08            ;outside loop index for 2KB
+    LDX #$00            ;inside loop indexes
 FillNameTablesLoop:
     TXA
     AND #$21
@@ -207,6 +208,7 @@ GAMELOOP:
 INITSPRITES:
     LDY #$00
     LDA #$FF
+
 INITSPRITELOOP:
     STA (spritemem), y
     INY
@@ -307,7 +309,7 @@ checkarelease:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 finishcontrols:
-processscrolling:
+processcrolling:
     LDA scrolly
     SEC
     SBC #$02
@@ -320,8 +322,6 @@ processscrolling:
     EOR #$02
     STA swap
 donescroll:
-processentities:
-
 doneprocessentities:
     NOP
     NOP
@@ -354,7 +354,7 @@ VBLANK:
     STA spritemem+1
 
 DRAWENTITIES:                       ;copied his code in for now. 
-    LDA entities+Entity::type, x
+    LDA entities+Entity::type, x    ;should start with x=0 - player sprite
     CMP #EntityType::PlayerType
     BEQ PLAYERSPRITE
     JMP CHECKENDSPRITE
@@ -368,7 +368,7 @@ PLAYERSPRITE:
     LDA #$02 ; tile
     STA (spritemem), y
     INY
-    LDA #$01 ; palette etc
+    LDA #$00 ; palette etc
     STA (spritemem), y
     INY
     LDA entities+Entity::xpos, x   ; x
@@ -384,7 +384,7 @@ PLAYERSPRITE:
     LDA #$12   ;tile location 16, first tile of second row
     STA (spritemem), y
     INY
-    LDA #$01   ;palette
+    LDA #$00   ;palette
     STA (spritemem), y
     INY
     LDA entities+Entity::xpos, x ; x position
@@ -398,7 +398,7 @@ PLAYERSPRITE:
     LDA #$03     ;same as top left but we will flip it and add 8 to xpos
     STA (spritemem), y
     INY
-    LDA #$41     ;palette %01000001   palette 1, flip horizontal
+    LDA #$00     ;palette %01000001   palette 1, flip horizontal
     STA (spritemem), y
     INY
     LDA entities+Entity::xpos, x
@@ -416,7 +416,7 @@ PLAYERSPRITE:
     LDA #$13   ;tile location 16, first tile of second row
     STA (spritemem), y
     INY
-    LDA #$41   ;palette with h-flip
+    LDA #$00   ;palette with h-flip
     STA (spritemem), y
     INY
     LDA entities+Entity::xpos, x
@@ -475,16 +475,17 @@ donewithppu:
 
 
 PALETTE:  ;seems like background can only access last 4 palettes?
-    ;sprite
-    .byte $0E, $1C, $2B, $39 ;palette 1  ;pastel green, blue-green, blue  map grabs this
-    .byte $0E, $06, $15, $36 ;palette 2   ;crimson, red, pink    bullet/enemy
-    .byte $0A, $05, $26, $30 ;palette 3  ;green, crimson, pink, white
-    .byte $0E, $13, $23, $33 ;palette 4   ;purples
-    ;background palettes     
-    .byte $0E, $06, $15, $36 ;palette 1   ;crimson, red, pink    bullet/enemy
+    ;sprite palettes     
+    .byte $0E, $07, $1C, $37 ;palette 3  ;browns and blue - main char
     .byte $0E, $1C, $2B, $39 ;palette 2  ;pastel green, blue-green, blue  map grabs this
     .byte $0A, $05, $26, $30 ;palette 3  ;green, crimson, pink, white
     .byte $0E, $13, $23, $33 ;palette 4   ;purples 
+
+    ;bg palettes
+    .byte $07, $27, $16, $17 ;palette 1  ;browns, golds, reds, bg1
+    .byte $0E, $06, $15, $36 ;palette 2   ;crimson, red, pink    bullet/enemy
+    .byte $0E, $07, $1C, $37 ;palette 3  ;browns and blue - main char
+    .byte $0E, $13, $23, $33 ;palette 4   ;purples
 
 
 .segment "VECTORS"
