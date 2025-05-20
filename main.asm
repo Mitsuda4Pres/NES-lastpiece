@@ -42,6 +42,10 @@ JOYPAD2         = $4017
     type .byte
 .endstruct
 
+.struct Metatile
+    pos .byte       ;{0000}x pos {0000} ypos 0-15
+    data .byte      ;{0000}flip h or v {0000} nametable address
+.endstruct
 
 .segment "STARTUP"
 
@@ -52,13 +56,22 @@ drawcomplete: .res 1
 scrollx:    .res 1
 scrolly:    .res 1
 swap:       .res 1
+screentag:  .res 1
 MAXENTITIES = 10        ;We don't have any entity types defined yet, so I'm going to skip some of the tutorial lines
 entities:   .res .sizeof(Entity) * MAXENTITIES  ;Here I can reserve space for commonly used game objects
 TOTALENTITIES = .sizeof(Entity) * MAXENTITIES   ;He does the sizeof(Entity) * MAXENTITIES to make sure he always has 
                                                 ;enough space on zeropage to handle objects on screen quickly
 buttonflag: .res 1
+counter:    .res 1
+checkvar:   .res 1
+yquad:      .res 1
+yquadi:     .res 1
+tablesize:  .res 1
+tiletoggle: .res 1
+tilebuffer: .res 32
 spritemem:  .res 2
 ptr:        .res 2
+
 
 .segment "CODE"
 
@@ -108,6 +121,7 @@ CLEARMEM:
     LDA #EntityType::PlayerType
     STA entities+Entity::type
 
+
 ;Clear register and set palette address
     LDA $2002
     LDA #$3F
@@ -130,40 +144,128 @@ PALETTELOAD:
     STA $2006           ;PPUADDR      we are using $2000 for graphics memory
     LDA #$00
     STA $2006           ;PPUADDR
-    LDY #$08            ;outside loop index for 2KB
-    LDX #$00            ;inside loop indexes
-FillNameTablesLoop:
-    TXA
-    AND #$21
-    ;CMP #$00
-    ;BEQ TopLeft
-    CMP #$01
-    BEQ TopRight
-    CMP #$20
-    BEQ BtmLeft
-    CMP #$21
-    BEQ BtmRight
-TopLeft:
-    LDA #$08
-    STA $2007
-    JMP IncX
-TopRight:
-    LDA #$09
-    STA $2007
-    JMP IncX
-BtmLeft:
-    LDA #$18
-    STA $2007
-    JMP IncX
-BtmRight:
-    LDA #$19
-    STA $2007
-IncX:
-    INX
-    BNE FillNameTablesLoop
-    DEY
-    BNE FillNameTablesLoop
 
+;Background filling routine begins
+;This section will get subbed out for metatile implementation
+;For simplicity, I'm gonna only use one palette for the BG
+
+;Begin with canvas tile fill
+;Ok, can't do that because of the write order, unless maybe I build an array in RAM then store it.
+;I need a way to check against the block table for each location.
+
+;Instead of filling the whole nametable at once, I'm going to try writing to a buffer. We'll have a toggle as to whether
+;it's writing the top side or bottom side of the row. This may go slow, but let's see if it works first. If it all fits b/t v-blank, then
+;great, though if I find performance issues later, optimizing here should be my first move.
+;Logical order:
+;Loop 15x{
+;   Write top line to tile buffer using Y index
+;       Check for Block tiles along the way
+;           Write buffer to $2007
+;               Switch toggle
+;   Write bottom line to tile buffer
+;       Check for Block tiles along the way
+;           Write buffer to $2007
+;               Switch toggle
+;       }
+    LDA #<BLOCKTABLE0
+    STA ptr+0
+    LDA #>BLOCKTABLE0
+    STA ptr+1
+    LDA #$00
+    STA counter
+    STA yquad
+    STA tiletoggle
+    LDX #$00
+    LDY #$04     ;outside counter starts at 4
+    TYA             ;$2007 write counter push to stack
+    PHA
+FillBuffer:
+    LDY counter     ;get block table counter (maybe can move out of loop to save an instruction)
+    LDA (ptr), y    ;get block location data X{0000}Y{0000}
+    AND #%00001111
+    STA checkvar    ;store block Y position
+CheckTileY:
+    LDA yquadi
+    AND #%00011000  ;0, 8, 16, or 24
+    STA yquad
+    TXA             ;grab X register to perform logic on
+    LSR
+    LSR
+    LSR
+    LSR
+    LSR
+    LSR             ;6 right shifts divide by 64, this will cover 8 rows of tiles (16 ppu rows)
+    CLC
+    ADC yquad       ;Add $00, $10, $20, or $30
+    CMP checkvar
+    BNE BuffCanvas  ;if check fails, buff a canvas tile
+    LDA (ptr), y    ;else check x
+    LSR
+    LSR
+    LSR
+    LSR             ;4 shifts right to put x-pos data into low nibble
+    STA checkvar
+CheckTileX:
+    TXA             ;X register hasn't changed yet, get back original X to perform logic
+    LSR             ;shift right to divide by 2 (bc we are checking metatile position 0-15, not ppu position 0-31)
+    AND #%00001111  ;take low 4 bits
+    CMP checkvar    ;compare with Block TIle x location
+    BNE BuffCanvas
+BuffBlock:
+    INY
+    STY counter     ;increment X and store back into block counter
+    TXA
+    TAY
+    AND #$01        ;everyother  position is a different 8x8 
+    CLC
+    ADC tiletoggle  ;should either be $00 or $10
+    STA (tilebuffer), y
+    INX
+    CPX #$20
+    BEQ WriteBuffer ;if y=32, buffer is full, time to write to $2007
+    JMP FillBuffer
+BuffCanvas:
+    TXA
+    TAY
+    AND #$01        ;everyother  position is a different 8x8 
+    CLC
+    ADC tiletoggle  ;should either be $00 or $10
+    CLC
+    ADC $02         ;next 16x16 address over in CHR
+    STA (tilebuffer), y
+    INX
+    CPX #$20
+    BEQ WriteBuffer ;if y=32, buffer is full, time to write to $2007
+    JMP FillBuffer
+WriteBuffer:
+IteratorCleanup:
+    LDX #$00         ;reset Y to 0
+    INC yquadi      ;increment y quadrant iterator
+    PLA             ;change to A if unavailable
+    SEC
+    SBC #$01        ;decrement meta row counter
+    BNE FinishedBGWrite ;if X hits 0, we're all done! (if a row is missing at the bottom, set X's intial value one higher)
+    PHA             ;increment meta row index (outside X, lives on stack.)
+WriteLoop:
+    LDA (tilebuffer), y
+    STA $2007       ;The money line!
+    LDA tiletoggle
+    CMP #$00
+    BNE TileToggleZero
+    LDA #$10
+    STA tiletoggle
+    JMP FinishWriteLoop
+TileToggleZero:
+    LDA #$00
+    STA tiletoggle
+FinishWriteLoop:
+    INY
+    CPY #$20
+    BNE WriteLoop
+    JMP FillBuffer
+FinishedBGWrite:
+
+;TODO: Okay, I've got bones but they're broken bones. Time to get into the debugger
 
 FILLATTRIBUTE0:
     LDA $2002       ;reset latch
@@ -177,18 +279,6 @@ FillAttribute0Loop:
     STA $2007
     DEX
     BNE FillAttribute0Loop
-FILLATTRIBUTE1:
-    LDA $2002       ;reset latch
-    LDA #$27        ;High byte of $23CO address (attributes)
-    STA $2006
-    LDA #$C0        ;Low byte
-    STA $2006
-    LDX #$40        ;Fill with 64 bytes
-    LDA #$FF        ;Attribute value
-FillAttribute1Loop:
-    STA $2007
-    DEX
-    BNE FillAttribute1Loop
 
     JSR WAITFORVBLANK
 
@@ -201,6 +291,11 @@ FillAttribute1Loop:
     STA spritemem
     LDA #$02
     STA spritemem+1
+
+    JMP GAMELOOP
+
+
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 GAMELOOP:
@@ -473,19 +568,38 @@ donewithppu:
 
     RTI
 
-
 PALETTE:  ;seems like background can only access last 4 palettes?
     ;sprite palettes     
-    .byte $0E, $07, $1C, $37 ;palette 3  ;browns and blue - main char
+    .byte $0E, $17, $1C, $37 ;palette 3  ;browns and blue - main char
     .byte $0E, $1C, $2B, $39 ;palette 2  ;pastel green, blue-green, blue  map grabs this
     .byte $0A, $05, $26, $30 ;palette 3  ;green, crimson, pink, white
     .byte $0E, $13, $23, $33 ;palette 4   ;purples 
 
     ;bg palettes
-    .byte $07, $27, $16, $17 ;palette 1  ;browns, golds, reds, bg1
+    .byte $0F, $06, $15, $18 ;palette 1  ;browns, golds, reds, bg1
     .byte $0E, $06, $15, $36 ;palette 2   ;crimson, red, pink    bullet/enemy
     .byte $0E, $07, $1C, $37 ;palette 3  ;browns and blue - main char
     .byte $0E, $13, $23, $33 ;palette 4   ;purples
+
+BLOCKTABLE0SIZE:
+    .byte $46      ;70 blocks in this table
+BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all they need is position X{0000} Y{0000}
+    .byte $00, $10,           $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0
+    .byte $01,                                                                       $F1
+    .byte $02, $12, $22, $32, $42, $52,                                              $F2
+    .byte $03,                                                                       $F3
+    .byte $04,                     $54, $64, $74, $84, $94,                          $F4
+    .byte $05,                                                                       $F5
+    .byte $06,                                                                       $F6
+    .byte $07,                                                                       $F7
+    .byte $08,                                               $A8, $B8,     $D8, $E8, $F8                                   
+    .byte $09,                                                                       $F9
+    .byte $0A,                                                                       $FA
+    .byte $0B,                                                                       $FB
+    .byte $0C,                                                                       $FC
+    .byte $0D,                                                                       $FD
+    .byte $0E, $1E, $2E, $3E, $4E, $5E, $6E, $7E, $8E, $9E, $AE, $BE, $CE, $DE, $EE, $FE
+
 
 
 .segment "VECTORS"
