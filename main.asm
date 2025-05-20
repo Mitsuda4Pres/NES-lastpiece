@@ -68,7 +68,7 @@ yquad:      .res 1
 yquadi:     .res 1
 tablesize:  .res 1
 tiletoggle: .res 1
-tilebuffer: .res 32
+tilebuffer: .res 64
 spritemem:  .res 2
 ptr:        .res 2
 
@@ -173,12 +173,13 @@ PALETTELOAD:
     STA ptr+1
     LDA #$00
     STA counter
-    STA yquad
-    STA tiletoggle
-    LDX #$00
-    LDY #$04     ;outside counter starts at 4
-    TYA             ;$2007 write counter push to stack
+    LDX #$0F        ;outside counter starts at 15
+    LDY #$00     
+    TXA             ;$2007 write counter push to stack
     PHA
+
+;TODO: START HERE!!!!
+
 FillBuffer:
     LDY counter     ;get block table counter (maybe can move out of loop to save an instruction)
     LDA (ptr), y    ;get block location data X{0000}Y{0000}
@@ -221,7 +222,7 @@ BuffBlock:
     ADC tiletoggle  ;should either be $00 or $10
     STA (tilebuffer), y
     INX
-    CPX #$20
+    CPX #$40
     BEQ WriteBuffer ;if y=32, buffer is full, time to write to $2007
     JMP FillBuffer
 BuffCanvas:
