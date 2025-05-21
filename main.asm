@@ -64,10 +64,7 @@ TOTALENTITIES = .sizeof(Entity) * MAXENTITIES   ;He does the sizeof(Entity) * MA
 buttonflag: .res 1
 counter:    .res 1
 checkvar:   .res 1
-yquad:      .res 1
-yquadi:     .res 1
-tablesize:  .res 1
-tiletoggle: .res 1
+blockrow:   .res 16
 tilebuffer: .res 64
 spritemem:  .res 2
 ptr:        .res 2
@@ -158,112 +155,115 @@ PALETTELOAD:
 ;great, though if I find performance issues later, optimizing here should be my first move.
 ;Logical order:
 ;Loop 15x{
-;   Write top line to tile buffer using Y index
-;       Check for Block tiles along the way
-;           Write buffer to $2007
-;               Switch toggle
-;   Write bottom line to tile buffer
-;       Check for Block tiles along the way
-;           Write buffer to $2007
-;               Switch toggle
+
 ;       }
-    LDA #<BLOCKTABLE0
+    LDA #<BLOCKTABLE0   ;high byte
     STA ptr+0
-    LDA #>BLOCKTABLE0
+    LDA #>BLOCKTABLE0   ;low byte
     STA ptr+1
     LDA #$00
     STA counter
-    LDX #$0F        ;outside counter starts at 15
+    LDX #$00        ;outside counter goes to 15
     LDY #$00     
     TXA             ;$2007 write counter push to stack
-    PHA
+    PHA             
 
 ;TODO: START HERE!!!!
-
-FillBuffer:
-    LDY counter     ;get block table counter (maybe can move out of loop to save an instruction)
-    LDA (ptr), y    ;get block location data X{0000}Y{0000}
-    AND #%00001111
-    STA checkvar    ;store block Y position
-CheckTileY:
-    LDA yquadi
-    AND #%00011000  ;0, 8, 16, or 24
-    STA yquad
-    TXA             ;grab X register to perform logic on
-    LSR
-    LSR
-    LSR
-    LSR
-    LSR
-    LSR             ;6 right shifts divide by 64, this will cover 8 rows of tiles (16 ppu rows)
-    CLC
-    ADC yquad       ;Add $00, $10, $20, or $30
-    CMP checkvar
-    BNE BuffCanvas  ;if check fails, buff a canvas tile
-    LDA (ptr), y    ;else check x
-    LSR
-    LSR
-    LSR
-    LSR             ;4 shifts right to put x-pos data into low nibble
-    STA checkvar
-CheckTileX:
-    TXA             ;X register hasn't changed yet, get back original X to perform logic
-    LSR             ;shift right to divide by 2 (bc we are checking metatile position 0-15, not ppu position 0-31)
-    AND #%00001111  ;take low 4 bits
-    CMP checkvar    ;compare with Block TIle x location
-    BNE BuffCanvas
-BuffBlock:
+GetBlocksInRow:
+    LDA (ptr), y
+    CMP $FF
+    BEQ BlocksEndOfRow
+    STA blockrow, y
     INY
-    STY counter     ;increment X and store back into block counter
-    TXA
-    TAY
-    AND #$01        ;everyother  position is a different 8x8 
-    CLC
-    ADC tiletoggle  ;should either be $00 or $10
-    STA (tilebuffer), y
+    CPY $11
+    BEQ BlocksEndOfRow ;this should never happen, but if we are iterating past 16, let's call it quits. Optimization, remove this
+    ;INC ptr+1           ;next address in BLOCKTABLE (Maybe needed if BLOCKTABLE is bigger than 256)
+    JMP GetBlocksInRow
+BlocksEndOfRow:         ;now 'blockrow' is filled with all block data on that row
+    INY
+    TYA
+    STA counter         ;Hang on to Y value for next row.
+    LDY #$00
+    LDX #$00
+FillBuffer: ;y - blockrow index, x - buffer index (essentially x location)
+    ;16 iterations of +2. On each one we will write the 2x2 metatile.
+    LDA (blockrow), y ;What is first piece of block data
+    LSR
+    LSR
+    LSR
+    LSR             ;put X value in low 4 bits
+    STA checkvar
+    CPX checkvar
+    BNE BuffCanvas
+BuffBlock:          ;Put entire metatile into 64 byte buffer
+    LDA $00         ;top left CHR address
+    STA tilebuffer, x
     INX
-    CPX #$40
-    BEQ WriteBuffer ;if y=32, buffer is full, time to write to $2007
+    LDA $01         ;top right
+    STA tilebuffer, x
+    TXA
+    CLC
+    ADC #$10
+    TAX
+    LDA $11         ;bottom right
+    STA tilebuffer, x
+    DEX
+    LDA #$10        ;bottom left
+    STA tilebuffer, x
+    TXA
+    SEC
+    SBC #$10        ;reset x to starting value
+    TAX
+    INX
+    INX             ;increment x for next loop
+    CMP #$10
+    BEQ WriteBuffer
+    INY             ;Incrememnt y because we drew a block
     JMP FillBuffer
 BuffCanvas:
-    TXA
-    TAY
-    AND #$01        ;everyother  position is a different 8x8 
-    CLC
-    ADC tiletoggle  ;should either be $00 or $10
-    CLC
-    ADC $02         ;next 16x16 address over in CHR
-    STA (tilebuffer), y
+    LDA $02         ;top left CHR address
+    STA tilebuffer, x
     INX
-    CPX #$20
-    BEQ WriteBuffer ;if y=32, buffer is full, time to write to $2007
+    LDA $03         ;top right
+    STA tilebuffer, x
+    TXA
+    CLC
+    ADC #$10
+    TAX
+    LDA $13         ;bottom right
+    STA tilebuffer, x
+    DEX
+    LDA #$12        ;bottom left
+    STA tilebuffer, x
+    TXA
+    SEC
+    SBC #$10        ;reset x to starting value
+    TAX
+    INX             ;increment x twice for next loop
+    INX
+    CMP #$10
+    BEQ WriteBuffer
     JMP FillBuffer
 WriteBuffer:
 IteratorCleanup:
-    LDX #$00         ;reset Y to 0
-    INC yquadi      ;increment y quadrant iterator
-    PLA             ;change to A if unavailable
-    SEC
-    SBC #$01        ;decrement meta row counter
-    BNE FinishedBGWrite ;if X hits 0, we're all done! (if a row is missing at the bottom, set X's intial value one higher)
-    PHA             ;increment meta row index (outside X, lives on stack.)
+    LDY #$00
+    LDX #$00
 WriteLoop:
     LDA (tilebuffer), y
     STA $2007       ;The money line!
-    LDA tiletoggle
-    CMP #$00
-    BNE TileToggleZero
-    LDA #$10
-    STA tiletoggle
-    JMP FinishWriteLoop
-TileToggleZero:
-    LDA #$00
-    STA tiletoggle
-FinishWriteLoop:
     INY
-    CPY #$20
+    CPY #$40
     BNE WriteLoop
-    JMP FillBuffer
+    PLA
+    TAX
+    INX
+    CPX #$10
+    BEQ FinishedBGWrite
+FinishedBuffer:
+    TXA
+    PHA
+    LDY counter
+    JMP GetBlocksInRow
 FinishedBGWrite:
 
 ;TODO: Okay, I've got bones but they're broken bones. Time to get into the debugger
@@ -581,25 +581,25 @@ PALETTE:  ;seems like background can only access last 4 palettes?
     .byte $0E, $06, $15, $36 ;palette 2   ;crimson, red, pink    bullet/enemy
     .byte $0E, $07, $1C, $37 ;palette 3  ;browns and blue - main char
     .byte $0E, $13, $23, $33 ;palette 4   ;purples
-
-BLOCKTABLE0SIZE:
-    .byte $46      ;70 blocks in this table
+    
+    ;TODO: potential for compressing again by half:
+    ;If I have a row-ender, I don't need a Y value, so II can pack two blocks into one byte: X1{0000}X2{0000}
 BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all they need is position X{0000} Y{0000}
-    .byte $00, $10,           $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0
-    .byte $01,                                                                       $F1
-    .byte $02, $12, $22, $32, $42, $52,                                              $F2
-    .byte $03,                                                                       $F3
-    .byte $04,                     $54, $64, $74, $84, $94,                          $F4
-    .byte $05,                                                                       $F5
-    .byte $06,                                                                       $F6
-    .byte $07,                                                                       $F7
-    .byte $08,                                               $A8, $B8,     $D8, $E8, $F8                                   
-    .byte $09,                                                                       $F9
-    .byte $0A,                                                                       $FA
-    .byte $0B,                                                                       $FB
-    .byte $0C,                                                                       $FC
-    .byte $0D,                                                                       $FD
-    .byte $0E, $1E, $2E, $3E, $4E, $5E, $6E, $7E, $8E, $9E, $AE, $BE, $CE, $DE, $EE, $FE
+    .byte $00, $10,           $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
+    .byte $01,                                                                       $F1, $FF
+    .byte $02, $12, $22, $32, $42, $52,                                              $F2, $FF
+    .byte $03,                                                                       $F3, $FF
+    .byte $04,                     $54, $64, $74, $84, $94,                          $F4, $FF
+    .byte $05,                                                                       $F5, $FF
+    .byte $06,                                                                       $F6, $FF
+    .byte $07,                                                                       $F7, $FF
+    .byte $08,                                               $A8, $B8,     $D8, $E8, $F8, $FF                              
+    .byte $09,                                                                       $F9, $FF
+    .byte $0A,                                                                       $FA, $FF
+    .byte $0B,                                                                       $FB, $FF
+    .byte $0C,                                                                       $FC, $FF
+    .byte $0D,                                                                       $FD, $FF
+    .byte $0E, $1E, $2E, $3E, $4E, $5E, $6E, $7E, $8E, $9E, $AE, $BE, $CE, $DE, $EE, $FE, $FF
 
 
 
