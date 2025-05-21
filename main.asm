@@ -55,6 +55,8 @@ controller: .res 1    ;reserve 1 byte for controller input
 drawcomplete: .res 1
 scrollx:    .res 1
 scrolly:    .res 1
+tilebufferA: .res 32
+tilebufferB: .res 32
 swap:       .res 1
 screentag:  .res 1
 MAXENTITIES = 10        ;We don't have any entity types defined yet, so I'm going to skip some of the tutorial lines
@@ -65,7 +67,6 @@ buttonflag: .res 1
 counter:    .res 1
 checkvar:   .res 1
 blockrow:   .res 16
-tilebuffer: .res 64
 spritemem:  .res 2
 ptr:        .res 2
 
@@ -169,13 +170,27 @@ PALETTELOAD:
     PHA             
 
 ;TODO: START HERE!!!!
-GetBlocksInRow:
-    LDA (ptr), y
-    CMP $FF
-    BEQ BlocksEndOfRow
+ClearBlockRow:
+    TYA
+    PHA
+    LDA #$00
+    LDY #$00
+    LDX #$00
+ClearLoop:
     STA blockrow, y
     INY
-    CPY $11
+    CPY #$10
+    BNE ClearLoop
+    PLA
+    TAY
+GetBlocksInRow:
+    LDA (ptr), y
+    CMP #$FF
+    BEQ BlocksEndOfRow
+    STA blockrow, x      ;Ok, I'm using y as the pointer index, but I can't use it as the blockrow index too, it's offset
+    INX
+    INY
+    CPY #$FF       ;turns out it did happen lmao. Of course it did. If I make a check, it needs to be against $FF, assuming a level could be all blocks
     BEQ BlocksEndOfRow ;this should never happen, but if we are iterating past 16, let's call it quits. Optimization, remove this
     ;INC ptr+1           ;next address in BLOCKTABLE (Maybe needed if BLOCKTABLE is bigger than 256)
     JMP GetBlocksInRow
@@ -186,84 +201,189 @@ BlocksEndOfRow:         ;now 'blockrow' is filled with all block data on that ro
     LDY #$00
     LDX #$00
 FillBuffer: ;y - blockrow index, x - buffer index (essentially x location)
-    ;16 iterations of +2. On each one we will write the 2x2 metatile.
-    LDA (blockrow), y ;What is first piece of block data
+    ;16 iterations of +2. On each one we will write the 2x2 metatile
+    TXA
+    ASL
+    ASL
+    ASL
+
+    ASL             ;push the '8' bit into the carry bit
+    BCS checkB
+checkA:
+    LDA blockrow, y ;What is first piece of block data
     LSR
     LSR
     LSR
-    LSR             ;put X value in low 4 bits
+    LSR             ;put X value in low 4 bits - works
     STA checkvar
-    CPX checkvar
-    BNE BuffCanvas
-BuffBlock:          ;Put entire metatile into 64 byte buffer
-    LDA $00         ;top left CHR address
-    STA tilebuffer, x
+    TXA             ;X is current iteration through the buffer, by twos (so that each metatile is placed two positions apart)
+    LSR             ;So to check against the "meta" x position, we should shift right.
+    CMP checkvar
+    BNE BuffCanvasA
+    JMP BuffBlockA
+checkB:
+    LDA blockrow, y ;What is first piece of block data
+    LSR
+    LSR
+    LSR
+    LSR             ;put X value in low 4 bits - works
+    STA checkvar
+    TXA             ;X is current iteration through the buffer, by twos (so that each metatile is placed two positions apart)
+    LSR             ;So to check against the "meta" x position, we should shift right.
+    CMP checkvar
+    BNE BuffCanvasB
+    JMP BuffBlockB
+BuffBlockA:          ;Put entire metatile into first 32 byte buffer
+    LDA #$00         ;top left CHR address
+    STA tilebufferA, x
     INX
-    LDA $01         ;top right
-    STA tilebuffer, x
+    LDA #$01         ;top right
+    STA tilebufferA, x
     TXA
     CLC
     ADC #$10
     TAX
-    LDA $11         ;bottom right
-    STA tilebuffer, x
+    LDA #$11         ;bottom right
+    STA tilebufferA, x
     DEX
     LDA #$10        ;bottom left
-    STA tilebuffer, x
+    STA tilebufferA, x
     TXA
     SEC
     SBC #$10        ;reset x to starting value
     TAX
-    INX
     INX             ;increment x for next loop
-    CMP #$10
-    BEQ WriteBuffer
+    INX
+    CPX #$20
+    BEQ JumpToWrite
     INY             ;Incrememnt y because we drew a block
     JMP FillBuffer
-BuffCanvas:
-    LDA $02         ;top left CHR address
-    STA tilebuffer, x
+JumpToWrite:
+    JMP WriteBuffer
+BuffCanvasA:
+    LDA #$02         ;top left CHR address
+    STA tilebufferA, x
     INX
-    LDA $03         ;top right
-    STA tilebuffer, x
+    LDA #$03         ;top right
+    STA tilebufferA, x
     TXA
     CLC
     ADC #$10
     TAX
-    LDA $13         ;bottom right
-    STA tilebuffer, x
+    LDA #$13         ;bottom right
+    STA tilebufferA, x
     DEX
     LDA #$12        ;bottom left
-    STA tilebuffer, x
+    STA tilebufferA, x
     TXA
     SEC
     SBC #$10        ;reset x to starting value
     TAX
     INX             ;increment x twice for next loop
     INX
-    CMP #$10
+    CPX #$20
+    BEQ WriteBuffer
+    JMP FillBuffer
+BuffBlockB:          ;Put entire metatile into second 32 byte buffer
+    TXA             
+    PHA
+    SEC
+    SBC #$10        ;store iterative X then subtract 16 from X to get a new iterator for second buffer. Grab og X from stack when done.
+    TAX
+    LDA #$00         ;top left CHR address
+    STA tilebufferB, x
+    INX
+    LDA #$01         ;top right
+    STA tilebufferB, x
+    TXA
+    CLC
+    ADC #$10
+    TAX
+    LDA #$11         ;bottom right
+    STA tilebufferB, x
+    DEX
+    LDA #$10        ;bottom left
+    STA tilebufferB, x
+    PLA
+    ;SEC
+    ;SBC #$10        ;reset x to starting value
+    TAX
+    INX             ;increment x for next loop
+    INX
+    CPX #$20
+    BEQ WriteBuffer
+    INY             ;Incrememnt y because we drew a block
+    JMP FillBuffer
+BuffCanvasB:
+    TXA             
+    PHA
+    SEC
+    SBC #$10        ;store iterative X then subtract 16 from X to get a new iterator for second buffer. Grab og X from stack when done.
+    TAX
+    LDA #$02         ;top left CHR address
+    STA tilebufferB, x
+    INX
+    LDA #$03         ;top right
+    STA tilebufferB, x
+    TXA
+    CLC
+    ADC #$10
+    TAX
+    LDA #$13         ;bottom right
+    STA tilebufferB, x
+    DEX
+    LDA #$12        ;bottom left
+    STA tilebufferB, x
+    ;TXA
+    ;SEC
+    ;SBC #$10        ;reset x to starting value
+    PLA
+    TAX
+    INX             ;increment x twice for next loop
+    INX
+    CPX #$20
     BEQ WriteBuffer
     JMP FillBuffer
 WriteBuffer:
 IteratorCleanup:
     LDY #$00
     LDX #$00
-WriteLoop:
-    LDA (tilebuffer), y
+WriteLoopA:
+    LDA tilebufferA, y
     STA $2007       ;The money line!
     INY
-    CPY #$40
-    BNE WriteLoop
+    CPY #$10
+    BNE WriteLoopA
+    LDY #$00
+WriteLoopB:
+    LDA tilebufferB, y
+    STA $2007       ;The money line!
+    INY
+    CPY #$10
+    BNE WriteLoopB
+WriteLoopC:
+    LDA tilebufferA, y ;should start pulling from tilebufferA + #$10 (16) for second row
+    STA $2007       ;The money line!
+    INY
+    CPY #$20
+    BNE WriteLoopC
+    LDY #$10
+WriteLoopD:
+    LDA tilebufferB, y
+    STA $2007       ;The money line!
+    INY
+    CPY #$20
+    BNE WriteLoopD
     PLA
     TAX
     INX
-    CPX #$10
+    CPX #$0F
     BEQ FinishedBGWrite
 FinishedBuffer:
     TXA
     PHA
     LDY counter
-    JMP GetBlocksInRow
+    JMP ClearBlockRow
 FinishedBGWrite:
 
 ;TODO: Okay, I've got bones but they're broken bones. Time to get into the debugger
