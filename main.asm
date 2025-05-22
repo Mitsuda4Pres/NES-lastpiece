@@ -29,17 +29,24 @@ APUSTATUS       = $4015
 JOYPAD1         = $4016
 JOYPAD2         = $4017
 
+;;;Custom registers/maps
+COLLMAPBANK     = $0500    ;one page is 256 bytes. Is this enough or do I bleed into 0600?
+
+;If I do a 2 bit coll map, each tile can have 4 properties: "not there", "solid", "climbable", "damaging"
+
+
 .scope EntityType
     NoEntity = 0
     PlayerType = 1
-    Bullet = 2
+    Treasure = 2
     Enemy = 3
 .endscope
 
-.struct Entity
+.struct Player
     xpos .byte
     ypos .byte
-    type .byte
+    state .byte  ;       fall climb   hurt jump walk standing
+                 ;0   0   0     0       0     0    0     0 -
 .endstruct
 
 .struct Metatile
@@ -59,9 +66,10 @@ tilebufferA: .res 32
 tilebufferB: .res 32
 swap:       .res 1
 screentag:  .res 1
-MAXENTITIES = 10        ;We don't have any entity types defined yet, so I'm going to skip some of the tutorial lines
-entities:   .res .sizeof(Entity) * MAXENTITIES  ;Here I can reserve space for commonly used game objects
-TOTALENTITIES = .sizeof(Entity) * MAXENTITIES   ;He does the sizeof(Entity) * MAXENTITIES to make sure he always has 
+playerdata: .res .sizeof(Player)
+;MAXENTITIES = 10        ;We don't have any entity types defined yet, so I'm going to skip some of the tutorial lines
+;entities:   .res .sizeof(Entity) * MAXENTITIES  ;Here I can reserve space for commonly used game objects
+;TOTALENTITIES = .sizeof(Entity) * MAXENTITIES   ;He does the sizeof(Entity) * MAXENTITIES to make sure he always has 
                                                 ;enough space on zeropage to handle objects on screen quickly
 buttonflag: .res 1
 counter:    .res 1
@@ -69,7 +77,6 @@ checkvar:   .res 1
 blockrow:   .res 16
 spritemem:  .res 2
 ptr:        .res 2
-
 
 .segment "CODE"
 
@@ -111,13 +118,13 @@ CLEARMEM:
     BNE CLEARMEM
 
     
-;initialize entities + Entity::xpos
-    LDA #$80
-    STA entities+Entity::xpos
-    LDA #$78
-    STA entities+Entity::ypos
-    LDA #EntityType::PlayerType
-    STA entities+Entity::type
+;initialize player
+    LDA #$20
+    STA playerdata+Player::xpos
+    LDA #$00
+    STA playerdata+Player::ypos
+    LDA #%00100000  ;falling
+    STA playerdata+Player::state
 
 
 ;Clear register and set palette address
@@ -142,7 +149,7 @@ PALETTELOAD:
     STA $2006           ;PPUADDR      we are using $2000 for graphics memory
     LDA #$00
     STA $2006           ;PPUADDR
-
+LoadScreen:
 ;Background filling routine begins
 ;This section will get subbed out for metatile implementation
 ;For simplicity, I'm gonna only use one palette for the BG
@@ -154,10 +161,6 @@ PALETTELOAD:
 ;Instead of filling the whole nametable at once, I'm going to try writing to a buffer. We'll have a toggle as to whether
 ;it's writing the top side or bottom side of the row. This may go slow, but let's see if it works first. If it all fits b/t v-blank, then
 ;great, though if I find performance issues later, optimizing here should be my first move.
-;Logical order:
-;Loop 15x{
-
-;       }
     LDA #<BLOCKTABLE0   ;high byte
     STA ptr+0
     LDA #>BLOCKTABLE0   ;low byte
@@ -170,6 +173,7 @@ PALETTELOAD:
     PHA             
 
 ;TODO: START HERE!!!!
+
 ClearBlockRow:
     TYA
     PHA
@@ -206,7 +210,6 @@ FillBuffer: ;y - blockrow index, x - buffer index (essentially x location)
     ASL
     ASL
     ASL
-
     ASL             ;push the '8' bit into the carry bit
     BCS checkB
 checkA:
@@ -386,7 +389,7 @@ FinishedBuffer:
     JMP ClearBlockRow
 FinishedBGWrite:
 
-;TODO: Okay, I've got bones but they're broken bones. Time to get into the debugger
+
 
 FILLATTRIBUTE0:
     LDA $2002       ;reset latch
@@ -400,6 +403,22 @@ FillAttribute0Loop:
     STA $2007
     DEX
     BNE FillAttribute0Loop
+LoadCollMap:
+    LDA #<COLLMAP0   ;high byte
+    STA ptr+0
+    LDA #>COLLMAP0   ;low byte
+    STA ptr+1
+    LDY #$00
+    LDX #$00
+WriteCMLoop:
+    LDA (ptr), y
+    STA COLLMAPBANK, x
+    INY
+    INX
+    CPY #$3C    ;60 bytes in COLLMAP0
+    BNE WriteCMLoop
+
+
 
     JSR WAITFORVBLANK
 
@@ -476,32 +495,33 @@ readcontrollerbuttons:
     ROL controller
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;TODO: More robust logic will go on button calls once collision detection is implemented
 
 checkleft:
     LDA controller          ;I think 1 means not pressed and 0 means pressed (opposite normal)
     AND #$02                ;abssudLr  bit2 is left, AND will return true if left is 1 (not pressed) then jump to checkright
     BEQ checkright          ;
-    DEC entities+Entity::xpos   ;decrement x position
+    DEC playerdata+Player::xpos   ;decrement x position
     JMP checkup ; don't allow for left and right at the same time (jump past checkright if left was pressed)
 
 checkright:
     LDA controller
     AND #$01
     BEQ checkup
-    INC entities+Entity::xpos
+    INC playerdata+Player::xpos
 
 checkup:
     LDA controller
     AND #$08
     BEQ checkdown
-    DEC entities+Entity::ypos
+    DEC playerdata+Player::ypos
     JMP donecheckingdirectional ;jump past check down so not getting both simultaneous
 
 checkdown:
     LDA controller
     AND #$04
     BEQ donecheckingdirectional
-    INC entities+Entity::ypos
+    INC playerdata+Player::ypos
 
 donecheckingdirectional:
 
@@ -521,7 +541,7 @@ checkarelease:
     AND #$01
     BEQ finishcontrols
     DEC buttonflag ;only works for a-button bc it's bit 1
-    ;JMP addbullet
+    ;JMP playerjump
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 finishcontrols:
@@ -538,10 +558,19 @@ processcrolling:
     EOR #$02
     STA swap
 donescroll:
-doneprocessentities:
-    NOP
-    NOP
-    NOP
+
+processplayer:
+    LDA playerdata+Player::state
+    ;bitmask against falling %00100000 if necessary
+    CMP #$20
+    BEQ PlayerFall
+PlayerFall:
+    ;to get it working, fall at a rate of 2 pps. Math later.
+    INC playerdata+Player::ypos
+    INC playerdata+Player::ypos
+
+
+    
 waitfordrawtocomplete:
     LDA drawcomplete
     CMP #$01
@@ -551,6 +580,29 @@ waitfordrawtocomplete:
 
     JMP GAMELOOP
 
+;;;;; ----- Logical subroutines ------ ;;;;;;
+CheckPlayerCollision: ;IN <--- direction of check (Y)
+;TODO: Only worry about one directional check at a time
+;Player's  x/y position need to be translated into the 2-bit collision map then compared
+;with what appears directionally in the next tile in that direction. Then resolve.    
+
+;Player X/Y are given based on 256x240 pixel screen. To reduce to 16x15, divide by 16. I think that's 4 shifts.
+;Or perhaps object needs to expand to pixel level
+    PHA
+    TXA
+    PHA
+    ;LDA
+
+    PLA
+    TAX
+    PLA
+    RTS
+
+
+
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    NMI / VBLANK    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 VBLANK:
     PHA ;push registers - A, P, X, Y
     PHP
@@ -570,15 +622,15 @@ VBLANK:
     STA spritemem+1
 
 DRAWENTITIES:                       ;copied his code in for now. 
-    LDA entities+Entity::type, x    ;should start with x=0 - player sprite
-    CMP #EntityType::PlayerType
-    BEQ PLAYERSPRITE
-    JMP CHECKENDSPRITE
+    ;LDA entities+Entity::type, x    ;should start with x=0 - player sprite
+    ;CMP #EntityType::PlayerType
+    ;BEQ PLAYERSPRITE
+    ;JMP CHECKENDSPRITE
     ;see https://www.nesdev.org/wiki/PPU_OAM
 
 PLAYERSPRITE:
     ;top left sprite
-    LDA entities+Entity::ypos, x ; y
+    LDA playerdata+Player::ypos, x ; y
     STA (spritemem), y
     INY
     LDA #$02 ; tile
@@ -587,12 +639,12 @@ PLAYERSPRITE:
     LDA #$00 ; palette etc
     STA (spritemem), y
     INY
-    LDA entities+Entity::xpos, x   ; x
+    LDA playerdata+Player::xpos, x   ; x
     STA (spritemem), y
     INY
 
     ;bottom left sprite
-    LDA entities+Entity::ypos, x ; y
+    LDA playerdata+Player::ypos, x ; y
     CLC
     ADC #$08   ;Add 8 pixels to y-pos for second sprite
     STA (spritemem), y
@@ -603,12 +655,12 @@ PLAYERSPRITE:
     LDA #$00   ;palette
     STA (spritemem), y
     INY
-    LDA entities+Entity::xpos, x ; x position
+    LDA playerdata+Player::xpos, x ; x position
     STA (spritemem), y
     INY
 
     ;top right sprite
-    LDA entities+Entity::ypos
+    LDA playerdata+Player::ypos
     STA (spritemem), y
     INY
     LDA #$03     ;same as top left but we will flip it and add 8 to xpos
@@ -617,14 +669,14 @@ PLAYERSPRITE:
     LDA #$00     ;palette %01000001   palette 1, flip horizontal
     STA (spritemem), y
     INY
-    LDA entities+Entity::xpos, x
+    LDA playerdata+Player::xpos, x
     CLC
     ADC #$08
     STA (spritemem), y
     INY
 
     ;bottom right
-    LDA entities+Entity::ypos, x ; y
+    LDA playerdata+Player::ypos, x ; y
     CLC
     ADC #$08   ;Add 8 pixels to y-pos for second sprite
     STA (spritemem), y
@@ -635,7 +687,7 @@ PLAYERSPRITE:
     LDA #$00   ;palette with h-flip
     STA (spritemem), y
     INY
-    LDA entities+Entity::xpos, x
+    LDA playerdata+Player::xpos, x
     CLC
     ADC #$08
     STA (spritemem), y
@@ -643,13 +695,13 @@ PLAYERSPRITE:
 
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 CHECKENDSPRITE:
-    TXA
-    CLC
-    ADC #.sizeof(Entity)
-    TAX
-    CPX #TOTALENTITIES
-    BEQ DONESPRITE
-    JMP DRAWENTITIES
+    ;TXA
+    ;CLC
+    ;ADC #.sizeof(Entity)
+    ;TAX
+    ;CPX #TOTALENTITIES
+    ;BEQ DONESPRITE
+    ;JMP DRAWENTITIES
 
 DONESPRITE:
 ;DMA copy sprites
@@ -721,7 +773,23 @@ BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all
     .byte $0D,                                                                       $FD, $FF
     .byte $0E, $1E, $2E, $3E, $4E, $5E, $6E, $7E, $8E, $9E, $AE, $BE, $CE, $DE, $EE, $FE, $FF
 
-
+;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
+COLLMAP0: ;will reduce to 60 bytes
+    .byte %01010000, %01010101, %01010101, %01010101
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01010101, %01010000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00010101, %01010000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000101, %00010101
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01010101, %01010101, %01010101, %01010101
 
 .segment "VECTORS"
     .word VBLANK

@@ -1,0 +1,41 @@
+Player State:
+For simplicity, only one state at a time
+Still use bitmask for now, unless I need more than 8 states, then consider numerical
+
+Falling - 
+	Enter state: No bottom collision
+	Action: Player moves downward (Y increases), player may move left and right
+	Next possible states: standing, hurt
+	Exit state: bottom collision with solid
+
+Standing - 
+	Enter state: Bottom collision with non-damaging solid
+	Action: Nothing
+	Next possible states: Walking, jumping, climbing
+	Exit state: Player input
+
+Walking - 
+	Enter state: Player input left or right
+	Action: Move, cycle animation
+	Next possible states: falling, standing, jumping
+	Exit state: Release input
+
+Jumping -
+	Enter state: PLayer presses A
+	Action: Add up/down motion to stand or walk
+	Next possible state: falling
+	Exit state: fall 
+
+Climbing - 
+	Enter state: Player presses up when standing on a climbable
+	Action: Move up or down the climbable, move left or right
+	Next possible states: standing, falling
+
+Hurt -
+	Enter state: Collide with damaging tile
+	Action: Die
+	Next possible states: none
+	Exit state: restart
+
+      16 8 4 2 1
+0 0 0 0  0 0 0 0
