@@ -45,8 +45,21 @@ COLLMAPBANK     = $0500    ;one page is 256 bytes. Is this enough or do I bleed 
 .struct Player
     xpos .byte
     ypos .byte
-    state .byte  ;       fall climb   hurt jump walk standing
-                 ;0   0   0     0       0     0    0     0 -
+    metax .byte
+    metay .byte
+    state .byte  ;faceright faceleft      fall  climb   hurt  jump  walk standing
+                 ;0         0               0     0       0     0    0     0 -
+.endstruct
+
+.struct PlayerSprite    ;directions based on facing right. swap when facing left.
+    topleft     .byte
+    topright    .byte
+    btmleft     .byte
+    btmright    .byte
+    tlpal       .byte
+    trpal       .byte
+    blpal       .byte
+    brpal       .byte
 .endstruct
 
 .struct Metatile
@@ -74,6 +87,11 @@ playerdata: .res .sizeof(Player)
 buttonflag: .res 1
 counter:    .res 1
 checkvar:   .res 1
+colltemp1:  .res 1
+colltemp2:  .res 1
+colltemp3:  .res 1
+animaframes: .res 1
+playersprite: .res .sizeof(PlayerSprite)
 blockrow:   .res 16
 spritemem:  .res 2
 ptr:        .res 2
@@ -123,9 +141,21 @@ CLEARMEM:
     STA playerdata+Player::xpos
     LDA #$00
     STA playerdata+Player::ypos
-    LDA #%00100000  ;falling
+    LDA #%10100000  ;falling, facing right
     STA playerdata+Player::state
-
+    LDA #$00
+    STA playersprite+PlayerSprite::topleft
+    LDA #$01
+    STA playersprite+PlayerSprite::topright
+    LDA #$10
+    STA playersprite+PlayerSprite::btmleft
+    LDA #$11
+    STA playersprite+PlayerSprite::btmright
+    LDA #$00
+    STA playersprite+PlayerSprite::tlpal
+    STA playersprite+PlayerSprite::trpal
+    STA playersprite+PlayerSprite::blpal
+    STA playersprite+PlayerSprite::brpal
 
 ;Clear register and set palette address
     LDA $2002
@@ -499,29 +529,39 @@ readcontrollerbuttons:
 
 checkleft:
     LDA controller          ;I think 1 means not pressed and 0 means pressed (opposite normal)
-    AND #$02                ;abssudLr  bit2 is left, AND will return true if left is 1 (not pressed) then jump to checkright
+    AND #$02                ;bit2 is left, AND will return true if left is 1 (not pressed) then jump to checkright
     BEQ checkright          ;
+    LDA playerdata+Player::state
+    AND #%00111100
+    ORA #%01000010          ;walking, facing left
+    STA playerdata+Player::state
     DEC playerdata+Player::xpos   ;decrement x position
+    INC animaframes
     JMP checkup ; don't allow for left and right at the same time (jump past checkright if left was pressed)
 
 checkright:
     LDA controller
     AND #$01
     BEQ checkup
+    LDA playerdata+Player::state
+    AND #%00111100
+    ORA #%10000010          ;walking facing right
+    STA playerdata+Player::state
     INC playerdata+Player::xpos
+    INC animaframes
 
 checkup:
     LDA controller
     AND #$08
     BEQ checkdown
-    DEC playerdata+Player::ypos
+    ;DEC playerdata+Player::ypos
     JMP donecheckingdirectional ;jump past check down so not getting both simultaneous
 
 checkdown:
     LDA controller
     AND #$04
     BEQ donecheckingdirectional
-    INC playerdata+Player::ypos
+    ;INC playerdata+Player::ypos
 
 donecheckingdirectional:
 
@@ -560,17 +600,84 @@ processcrolling:
 donescroll:
 
 processplayer:
+FindMetaPosition:
+    LDA playerdata+Player::xpos
+    LSR
+    LSR
+    LSR
+    LSR
+    STA playerdata+Player::metax
+    LDA playerdata+Player::ypos
+    LSR
+    LSR
+    LSR
+    LSR
+    STA playerdata+Player::metay
+LoadState:
+;check walk state
     LDA playerdata+Player::state
+    AND #%00000010
+    CMP #$02
+    BNE CheckFalling
+    LDA animaframes
+    LSR
+    LSR
+    LSR
+    LSR
+    BCS SetWalkTwo
+SetWalkOne:
+    LDA #$02
+    STA playersprite+PlayerSprite::topleft
+    LDA #$03
+    STA playersprite+PlayerSprite::topright
+    LDA #$12
+    STA playersprite+PlayerSprite::btmleft
+    LDA #$13
+    STA playersprite+PlayerSprite::btmright
+    JMP CheckFalling
+SetWalkTwo:
+    LDA #$04
+    STA playersprite+PlayerSprite::topleft
+    LDA #$05
+    STA playersprite+PlayerSprite::topright
+    LDA #$14
+    STA playersprite+PlayerSprite::btmleft
+    LDA #$15
+    STA playersprite+PlayerSprite::btmright
+
+;check fall state
+CheckFalling:
+    LDA playerdata+Player::state
+    AND #%00100000
     ;bitmask against falling %00100000 if necessary
     CMP #$20
     BEQ PlayerFall
+;check stand state
+    LDA playerdata+Player::state
+    AND #%00000010
+    CMP #$00
+    BEQ PlayerIdle
+    JMP EndProcessPlayer
 PlayerFall:
     ;to get it working, fall at a rate of 2 pps. Math later.
     INC playerdata+Player::ypos
     INC playerdata+Player::ypos
+    JMP EndProcessPlayer
+PlayerIdle:
+    LDA #$00
+    STA animaframes
+    STA playersprite+PlayerSprite::topleft
+    LDA #$01
+    STA playersprite+PlayerSprite::topright
+    LDA #$10
+    STA playersprite+PlayerSprite::btmleft
+    LDA #$11
+    STA playersprite+PlayerSprite::btmright
+EndProcessPlayer:
+    JSR CheckPlayerCollisionDown    ;check downward collision every frame
+    JSR CheckPlayerCollisionLeft
+    JSR CheckPlayerCollisionRight
 
-
-    
 waitfordrawtocomplete:
     LDA drawcomplete
     CMP #$01
@@ -581,7 +688,7 @@ waitfordrawtocomplete:
     JMP GAMELOOP
 
 ;;;;; ----- Logical subroutines ------ ;;;;;;
-CheckPlayerCollision: ;IN <--- direction of check (Y)
+CheckPlayerCollisionDown: ;IN <--- direction of check (Y)
 ;TODO: Only worry about one directional check at a time
 ;Player's  x/y position need to be translated into the 2-bit collision map then compared
 ;with what appears directionally in the next tile in that direction. Then resolve.    
@@ -592,15 +699,283 @@ CheckPlayerCollision: ;IN <--- direction of check (Y)
     TXA
     PHA
     ;LDA
-
+    ;check facing to determine which edge to test
+    LDA playerdata+Player::state
+    AND #%10000000      ;check against facing right
+    BEQ CheckFacingLeft ;if not, go to left
+CheckFacingRight:
+    LDA playerdata+Player::xpos    ;Use pixel X for finer tune
+    STA colltemp3
+    LSR
+    LSR
+    LSR
+    LSR
+    LSR
+    LSR
+    STA colltemp2   ;collmap x byte
+    JMP ContinueCheck
+CheckFacingLeft:
+    LDA playerdata+Player::xpos    ;Use pixel X for finer tune
+    CLC
+    ADC #$10
+    STA colltemp3
+    LSR
+    LSR
+    LSR
+    LSR
+    LSR
+    LSR
+    STA colltemp2   ;collmap x byte
+ContinueCheck:
+    LDA playerdata+Player::metay
+    ASL
+    ASL
+    CLC
+    ADC colltemp2   ;Add x byte to Y byte to find byte location in collmap
+    ;Once "inside" the byte, bit position can be found with metax. But I need the bit that is "below" it in the map,
+    ;which is the bit that is 4 bytes away. Which may render the above STA useless since I'm still modifying this value
+    CLC
+    ADC #$04    ;+4 takes us "down a row" to the meta tile below. This logic will change per subroutine
+    STA colltemp1   ;target byte, time to find the bit
+    SEC
+    SBC #$3C
+    BCS ReturnFromCheckDown
+    LDA colltemp3       ;get x back
+    LSR
+    LSR
+    LSR
+    LSR
+    AND #%00000011              ;mask out last two bits. Result determines bit mask for target byte
+    CMP #$00
+    BEQ MaskOutZero
+    CMP #$01
+    BEQ MaskOutOne
+    CMP #$02
+    BEQ MaskOutTwo
+    CMP #$03
+    BNE ReturnFromCheckDown
+    JMP MaskOutThree
+ReturnFromCheckDown:
+    JMP ReturnFromColl
+MaskOutZero:
+    LDX colltemp1
+    LDA COLLMAPBANK, x ;Load target byte from collision map
+    AND #%11000000
+    CMP #%01000000
+    BNE NoGround  ;if not a 01, no collision
+ZeroChangeState:
+    LDA playerdata+Player::metay
+    ASL
+    ASL
+    ASL
+    ASL
+    STA playerdata+Player::ypos ;set player's actual Ypos to the top of the meta tile.
+    LDA playerdata+Player::state
+    AND #%11000000
+    ORA #%00000001
+    STA playerdata+Player::state
+    JMP ReturnFromColl
+MaskOutOne:
+;left side check
+    LDX colltemp1
+    LDA COLLMAPBANK, x ;Load target byte from collision map
+    AND #%00110000
+    LSR
+    LSR
+    LSR
+    LSR
+    CMP #$01
+    BNE NoGround  ;if not a 01, no collision
+OneChangeState:
+    LDA playerdata+Player::metay
+    ASL
+    ASL
+    ASL
+    ASL
+    STA playerdata+Player::ypos ;set player's actual Ypos to the top of the meta tile.
+    LDA playerdata+Player::state
+    AND #%11000000
+    ORA #%00000001
+    STA playerdata+Player::state
+    JMP ReturnFromColl
+MaskOutTwo:
+;left side check
+    LDX colltemp1
+    LDA COLLMAPBANK, x ;Load target byte from collision map
+    AND #%00001100
+    LSR
+    LSR
+    CMP #$01
+    BNE NoGround  ;if not a 01, no collision
+TwoChangeState:
+    LDA playerdata+Player::metay
+    ASL
+    ASL
+    ASL
+    ASL
+    STA playerdata+Player::ypos ;set player's actual Ypos to the top of the meta tile.
+    LDA playerdata+Player::state
+    AND #%11000000
+    ORA #%00000001
+    STA playerdata+Player::state
+    JMP ReturnFromColl
+MaskOutThree:
+;left side check
+    LDX colltemp1
+    LDA COLLMAPBANK, x ;Load target byte from collision map
+    AND #%00000011
+    CMP #$01
+    BNE NoGround  ;if not a 01, no collision
+ThreeChangeState:
+    LDA playerdata+Player::metay
+    ASL
+    ASL
+    ASL
+    ASL
+    STA playerdata+Player::ypos ;set player's actual Ypos to the top of the meta tile.
+    LDA playerdata+Player::state
+    AND #%11000000
+    ORA #%00000001
+    STA playerdata+Player::state
+    JMP ReturnFromColl
+NoGround:
+    LDA playerdata+Player::state
+    AND #%11000000
+    ORA #%00100000
+    STA playerdata+Player::state ;set player state to falling
+ReturnFromColl:
     PLA
     TAX
     PLA
     RTS
 
+CheckPlayerCollisionLeft:
+    PHA
+    TXA
+    PHA
+    LDA playerdata+Player::metax
+    LSR
+    LSR
+    STA colltemp1
+    LDA playerdata+Player::metay
+    ASL
+    ASL
+    CLC
+    ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
+    STA colltemp2   ;Location of player byte in coll map
+    ;find bit pair
+    LDA playerdata+Player::metax
+    AND #%00000011
+    CMP #$00
+    BEQ MaskOutZeroL
+    CMP #$01
+    BEQ MaskOutOneL
+    CMP #$02
+    BEQ MaskOutTwoL
+    CMP #$03
+    BNE ReturnFromCollL
+    JMP MaskOutThreeL
+MaskOutZeroL:
+    LDX colltemp2
+    LDA COLLMAPBANK, x
+    AND #%11000000 ;the bit set to the left of three
+    CMP #%01000000
+    BNE ReturnFromCollL
+    INC playerdata+Player::xpos
+    JMP ReturnFromCollL
+MaskOutOneL:
+    LDX colltemp2
+    LDA COLLMAPBANK, x
+    AND #%00110000 ;the bit set to the left of three
+    CMP #%00010000
+    BNE ReturnFromCollL
+    INC playerdata+Player::xpos
+    JMP ReturnFromCollL
+MaskOutTwoL:
+    LDX colltemp2
+    LDA COLLMAPBANK, x
+    AND #%00001100 ;the bit set to the left of three
+    CMP #%00000100
+    BNE ReturnFromCollL
+    INC playerdata+Player::xpos
+    JMP ReturnFromCollL
+MaskOutThreeL:
+    LDX colltemp2
+    LDA COLLMAPBANK, x
+    AND #%00000011 ;the bit set to the left of three
+    CMP #%00000001
+    BNE ReturnFromCollL
+    INC playerdata+Player::xpos
+ReturnFromCollL:
+    PLA
+    TAX
+    PLA
+    RTS
 
-
-
+CheckPlayerCollisionRight:
+    PHA
+    TXA
+    PHA
+    LDA playerdata+Player::metax
+    CLC
+    ADC #$01
+    LSR
+    LSR
+    STA colltemp1
+    LDA playerdata+Player::metay
+    ASL
+    ASL
+    CLC
+    ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
+    STA colltemp2   ;Location of player byte in coll map
+    ;find bit pair
+    LDA playerdata+Player::metax
+    AND #%00000011
+    CMP #$00
+    BEQ MaskOutZeroR
+    CMP #$01
+    BEQ MaskOutOneR
+    CMP #$02
+    BEQ MaskOutTwoR
+    CMP #$03
+    BNE ReturnFromCollR
+    JMP MaskOutThreeR
+MaskOutZeroR:
+    LDX colltemp2
+    LDA COLLMAPBANK, x
+    AND #%00110000 ;the bit set to the left of three
+    CMP #%00010000
+    BNE ReturnFromCollR
+    DEC playerdata+Player::xpos
+    JMP ReturnFromCollR
+MaskOutOneR:
+    LDX colltemp2
+    LDA COLLMAPBANK, x
+    AND #%00001100 ;the bit set to the left of three
+    CMP #%00000100
+    BNE ReturnFromCollR
+    DEC playerdata+Player::xpos
+    JMP ReturnFromCollR
+MaskOutTwoR:
+    LDX colltemp2
+    LDA COLLMAPBANK, x
+    AND #%00000011 ;the bit set to the left of three
+    CMP #%00000001
+    BNE ReturnFromCollR
+    DEC playerdata+Player::xpos
+    JMP ReturnFromCollR
+MaskOutThreeR:
+    LDX colltemp2
+    LDA COLLMAPBANK, x
+    AND #%11000000 ;the bit set to the left of three
+    CMP #%01000000
+    BNE ReturnFromCollR
+    DEC playerdata+Player::xpos
+ReturnFromCollR:
+    PLA
+    TAX
+    PLA
+    RTS
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    NMI / VBLANK    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 VBLANK:
@@ -629,11 +1004,17 @@ DRAWENTITIES:                       ;copied his code in for now.
     ;see https://www.nesdev.org/wiki/PPU_OAM
 
 PLAYERSPRITE:
+    LDA playerdata+Player::state
+    AND #%11000000
+    CMP #$80
+    BNE DrawPlayerFacingLeft
+
+DrawPlayerFacingRight:
     ;top left sprite
     LDA playerdata+Player::ypos, x ; y
     STA (spritemem), y
     INY
-    LDA #$02 ; tile
+    LDA playersprite+PlayerSprite::topleft ; tile
     STA (spritemem), y
     INY
     LDA #$00 ; palette etc
@@ -649,7 +1030,7 @@ PLAYERSPRITE:
     ADC #$08   ;Add 8 pixels to y-pos for second sprite
     STA (spritemem), y
     INY
-    LDA #$12   ;tile location 16, first tile of second row
+    LDA playersprite+PlayerSprite::btmleft   ;tile location 16, first tile of second row
     STA (spritemem), y
     INY
     LDA #$00   ;palette
@@ -663,7 +1044,7 @@ PLAYERSPRITE:
     LDA playerdata+Player::ypos
     STA (spritemem), y
     INY
-    LDA #$03     ;same as top left but we will flip it and add 8 to xpos
+    LDA playersprite+PlayerSprite::topright     ;same as top left but we will flip it and add 8 to xpos
     STA (spritemem), y
     INY
     LDA #$00     ;palette %01000001   palette 1, flip horizontal
@@ -681,7 +1062,7 @@ PLAYERSPRITE:
     ADC #$08   ;Add 8 pixels to y-pos for second sprite
     STA (spritemem), y
     INY
-    LDA #$13   ;tile location 16, first tile of second row
+    LDA playersprite+PlayerSprite::btmright   
     STA (spritemem), y
     INY
     LDA #$00   ;palette with h-flip
@@ -692,6 +1073,74 @@ PLAYERSPRITE:
     ADC #$08
     STA (spritemem), y
     INY
+
+    JMP CHECKENDSPRITE
+
+DrawPlayerFacingLeft:
+    ;top left sprite
+    LDA playerdata+Player::ypos, x ; y
+    STA (spritemem), y
+    INY
+    LDA playersprite+PlayerSprite::topright ; tile
+    STA (spritemem), y
+    INY
+    LDA #$40 ; palette etc
+    STA (spritemem), y
+    INY
+    LDA playerdata+Player::xpos, x   ; x
+    STA (spritemem), y
+    INY
+
+    ;bottom left sprite
+    LDA playerdata+Player::ypos, x ; y
+    CLC
+    ADC #$08   ;Add 8 pixels to y-pos for second sprite
+    STA (spritemem), y
+    INY
+    LDA playersprite+PlayerSprite::btmright   ;tile location 16, first tile of second row
+    STA (spritemem), y
+    INY
+    LDA #$40   ;palette
+    STA (spritemem), y
+    INY
+    LDA playerdata+Player::xpos, x ; x position
+    STA (spritemem), y
+    INY
+
+    ;top right sprite
+    LDA playerdata+Player::ypos
+    STA (spritemem), y
+    INY
+    LDA playersprite+PlayerSprite::topleft     ;same as top left but we will flip it and add 8 to xpos
+    STA (spritemem), y
+    INY
+    LDA #$40     ;palette %01000001   palette 1, flip horizontal
+    STA (spritemem), y
+    INY
+    LDA playerdata+Player::xpos, x
+    CLC
+    ADC #$08
+    STA (spritemem), y
+    INY
+
+    ;bottom right
+    LDA playerdata+Player::ypos, x ; y
+    CLC
+    ADC #$08   ;Add 8 pixels to y-pos for second sprite
+    STA (spritemem), y
+    INY
+    LDA playersprite+PlayerSprite::btmleft   
+    STA (spritemem), y
+    INY
+    LDA #$40   ;palette with h-flip
+    STA (spritemem), y
+    INY
+    LDA playerdata+Player::xpos, x
+    CLC
+    ADC #$08
+    STA (spritemem), y
+    INY
+
 
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 CHECKENDSPRITE:
