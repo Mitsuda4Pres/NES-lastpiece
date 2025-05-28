@@ -40,8 +40,8 @@ ENTITIES        = $0600
     Enemy = 3
 .endscope
 
-.struct Entity
-    Type    .byte
+.struct Entity      ;15b
+    type    .byte
     xpos    .byte
     ypos    .byte
     state   .byte
@@ -51,10 +51,13 @@ ENTITIES        = $0600
     trspr      .byte
     blspr        .byte
     brspr       .byte
-    tlpal       .byte
+    tlpal       .byte ;likely can reduce these to one palette byte, then one byte with bit flags for each quadrant for flips h and v
     trpal       .byte
     blpal       .byte
     brpal       .byte
+    env         .byte
+    metax       .byte
+    metay       .byte
 .endstruct
 
 .struct Player
@@ -89,39 +92,37 @@ ENTITIES        = $0600
     attbl         .byte
     attbr         .byte
     xpos        .byte
+    state       .byte
 .endstruct
 
 .segment "STARTUP"
 
 ;I had to open of the zero page in nes.cfg to range from $0002 to $00FF. Idk if that will break something later.
 .segment "ZEROPAGE"
-controller: .res 1    ;reserve 1 byte for controller input
-drawcomplete: .res 1
-scrollx:    .res 1
-scrolly:    .res 1
-tilebufferA: .res 32
-tilebufferB: .res 32
-swap:       .res 1
-screentag:  .res 1
-playerdata: .res .sizeof(Player)
-;MAXENTITIES = 5        ;We don't have any entity types defined yet, so I'm going to skip some of the tutorial lines
-;entities:   .res .sizeof(Entity) * MAXENTITIES  ;Here I can reserve space for commonly used game objects
-;TOTALENTITIES = .sizeof(Entity) * MAXENTITIES   ;He does the sizeof(Entity) * MAXENTITIES to make sure he always has 
-                                                ;enough space on zeropage to handle objects on screen quickly
-buttonflag: .res 1
-counter:    .res 1
-checkvar:   .res 1
-colltemp1:  .res 1
-colltemp2:  .res 1
-colltemp3:  .res 1
-animaframes: .res 1
-totalsprites:   .res 1
-playersprite: .res .sizeof(PlayerSprite)
-blockrow:   .res 16
-spritemem:  .res 2
-ptr:        .res 2
-metatile:   .res .sizeof(Metatile)
-entitybuffer:   .res .sizeof(Entity)
+controller:         .res 1    ;reserve 1 byte for controller input
+drawcomplete:       .res 1
+scrollx:            .res 1
+scrolly:            .res 1
+tilebufferA:        .res 32
+tilebufferB:        .res 32
+swap:               .res 1
+buttonflag:         .res 1
+counter:            .res 1
+checkvar:           .res 1
+colltemp1:          .res 1
+colltemp2:          .res 1
+colltemp3:          .res 1
+animaframes:        .res 1
+totalsprites:       .res 1
+playerdata:         .res .sizeof(Entity)            ;15b
+playersprite:       .res .sizeof(PlayerSprite)      ;8b
+metatile:           .res .sizeof(Metatile)          ;10b
+entitybuffer:       .res .sizeof(Entity)            ;12b
+blockrow:           .res 16
+spritemem:          .res 2
+ptr:                .res 2
+
+;total zero page reserved: 143b
 
 .segment "CODE"
 
@@ -165,42 +166,51 @@ CLEARMEM:
     LDX #$00
 InitializePlayer:
     LDA #EntityType::PlayerType
+    STA playerdata+Entity::type
     STA ENTITIES, x
     INX
     LDA #$20
-    STA playerdata+Player::xpos
+    STA playerdata+Entity::xpos
     STA ENTITIES, x
     INX   
     LDA #$00
-    STA playerdata+Player::ypos
+    STA playerdata+Entity::ypos
     STA ENTITIES, x
     INX
-    STA playerdata+Player::env
     LDA #%10100000  ;falling, facing right
-    STA playerdata+Player::state
+    STA playerdata+Entity::state
     STA ENTITIES, x
     INX
     LDA #$00
     STA playersprite+PlayerSprite::topleft
+    STA playerdata+Entity::tlspr
     STA ENTITIES, x
     INX
     LDA #$01
     STA playersprite+PlayerSprite::topright
+    STA playerdata+Entity::trspr
     STA ENTITIES, x
     INX
     LDA #$10
     STA playersprite+PlayerSprite::btmleft
+    STA playerdata+Entity::blspr
     STA ENTITIES, x
     INX
     LDA #$11
     STA playersprite+PlayerSprite::btmright
+    STA playerdata+Entity::brspr
     STA ENTITIES, x
     INX
     LDA #$00
+    ;TODO: remove playersprite struct, included into entity struct
     STA playersprite+PlayerSprite::tlpal
+    STA playerdata+Entity::tlpal
     STA playersprite+PlayerSprite::trpal
+    STA playerdata+Entity::trpal
     STA playersprite+PlayerSprite::blpal
+    STA playerdata+Entity::blpal
     STA playersprite+PlayerSprite::brpal
+    STA playerdata+Entity::brpal
     STA ENTITIES, x
     INX
     STA ENTITIES, x
@@ -209,48 +219,63 @@ InitializePlayer:
     INX
     STA ENTITIES, x
     INX
+    LDA #$00        ;no env
+    STA playerdata+Entity::env
+    STA ENTITIES, x
+    INX
+    STA ENTITIES, x     ;zero out meta x
+    INX
+    STA ENTITIES, x     ;zero out meta y
+    INX
+    ;15 writes to ENTITIES array
+    
 
-InitializeMedallion:
+InitializeLastPiece:
     ;The only startingg entity is the last medallion piece
-    ;In the future, I can have an array of starting entites somewhere to read from
     LDA #EntityType::Treasure
     STA ENTITIES, x
     INX
-    LDA #$C0    ;xpos
+    LDA #$E0    ;xpos
     STA ENTITIES, x
     INX
-    LDA #$E0    ;ypos
+    LDA #$D0    ;ypos
     STA ENTITIES, x
     INX
-    LDA #$00
+    LDA #$80    ;state
     STA ENTITIES, x
     INX
-    LDA #$26
+    LDA #$26    ;tl sprite
     STA ENTITIES, x
     INX
-    LDA #$27
+    LDA #$27    ;tr sprite
     STA ENTITIES, x
     INX
-    LDA #$36
+    LDA #$36    ;bl prite
     STA ENTITIES, x
     INX
-    LDA #$37
+    LDA #$37    ;br sprite
     STA ENTITIES, x
     INX
-    LDA #$01
-    STA ENTITIES, x
-    INX
+    LDA #$01    ;palette
     STA ENTITIES, x
     INX
     STA ENTITIES, x
     INX
     STA ENTITIES, x
+    INX
+    STA ENTITIES, x
+    INX
+    STA ENTITIES, x ;env
+    INX
+    STA ENTITIES, x ;metax  -deprecate out to a zero page variable for player?
+    INX
+    STA ENTITIES, x ;metay
     INX
     LDA #$FF
     STA ENTITIES, x
     INX
-    LDA #$0A ;player plus medallion pieces
-    STA totalsprites
+    ;LDA #$0A ;player plus medallion pieces
+    ;STA totalsprites
 ;Clear register and set palette address
     LDA $2002
     LDA #$3F
@@ -295,7 +320,6 @@ LoadScreen:
     LDY #$00     
     TXA             ;$2007 write counter push to stack
     PHA             
-
 ClearBlockRow:
     TYA
     PHA
@@ -694,11 +718,11 @@ checkleft:
     LDA controller          ;I think 1 means not pressed and 0 means pressed (opposite normal)
     AND #$02                ;bit2 is left, AND will return true if left is 1 (not pressed) then jump to checkright
     BEQ checkright          ;
-    LDA playerdata+Player::state
-    AND #%00111100
+    LDA playerdata+Entity::state
+    AND #%00111100                     ;TODO: OPTIMIZE - save cycles by jumping
     ORA #%01000010          ;walking, facing left
-    STA playerdata+Player::state
-    DEC playerdata+Player::xpos   ;decrement x position
+    STA playerdata+Entity::state
+    DEC playerdata+Entity::xpos   ;decrement x position
     INC animaframes
     JMP checkup ; don't allow for left and right at the same time (jump past checkright if left was pressed)
 
@@ -706,23 +730,23 @@ checkright:
     LDA controller
     AND #$01
     BEQ checkup
-    LDA playerdata+Player::state
+    LDA playerdata+Entity::state
     AND #%00111100
     ORA #%10000010          ;walking facing right
-    STA playerdata+Player::state
-    INC playerdata+Player::xpos
+    STA playerdata+Entity::state
+    INC playerdata+Entity::xpos
     INC animaframes
 
 checkup:
     LDA controller
     AND #$08
     BEQ checkdown
-    LDA playerdata+Player::env
+    LDA playerdata+Entity::env
     CMP #$01    ;over a climbable
     BNE donecheckingdirectional
-    LDA playerdata+Player::state
+    LDA playerdata+Entity::state
     ORA #%00010000      ;set to climbing
-    DEC playerdata+Player::ypos
+    DEC playerdata+Entity::ypos
 ;JumpToDone:
     ;JMP donecheckingdirectional ;jump past check down so not getting both simultaneous
 
@@ -730,12 +754,12 @@ checkdown:
     LDA controller
     AND #$04
     BEQ donecheckingdirectional
-    LDA playerdata+Player::env
+    LDA playerdata+Entity::env
     CMP #$01    ;over a climbable
     BNE donecheckingdirectional
-    LDA playerdata+Player::state
+    LDA playerdata+Entity::state
     ORA #%00010000      ;set to climbing
-    INC playerdata+Player::ypos
+    INC playerdata+Entity::ypos
 ;JumpToDone:
     ;JMP donecheckingdirectional ;jump past check down so not getting both simultaneous
 
@@ -778,21 +802,21 @@ donescroll:
 
 processplayer:
 FindMetaPosition:
-    LDA playerdata+Player::xpos
+    LDA playerdata+Entity::xpos
     LSR
     LSR
     LSR
     LSR
-    STA playerdata+Player::metax
-    LDA playerdata+Player::ypos
+    STA playerdata+Entity::metax
+    LDA playerdata+Entity::ypos
     LSR
     LSR
     LSR
     LSR
-    STA playerdata+Player::metay
+    STA playerdata+Entity::metay
 LoadState:
 ;check walk state
-    LDA playerdata+Player::state
+    LDA playerdata+Entity::state
     AND #%00000010
     CMP #$02
     BNE CheckFalling
@@ -804,56 +828,75 @@ LoadState:
     BCS SetWalkTwo
 SetWalkOne:
     LDA #$02
-    STA playersprite+PlayerSprite::topleft
+    STA playerdata+Entity::tlspr
     LDA #$03
-    STA playersprite+PlayerSprite::topright
+    STA playerdata+Entity::trspr
     LDA #$12
-    STA playersprite+PlayerSprite::btmleft
+    STA playerdata+Entity::blspr
     LDA #$13
-    STA playersprite+PlayerSprite::btmright
+    STA playerdata+Entity::brspr
     JMP CheckFalling
 SetWalkTwo:
     LDA #$04
-    STA playersprite+PlayerSprite::topleft
+    STA playerdata+Entity::tlspr
     LDA #$05
-    STA playersprite+PlayerSprite::topright
+    STA playerdata+Entity::trspr
     LDA #$14
-    STA playersprite+PlayerSprite::btmleft
+    STA playerdata+Entity::blspr
     LDA #$15
-    STA playersprite+PlayerSprite::btmright
+    STA playerdata+Entity::brspr
 
 ;check fall state
 CheckFalling:
-    LDA playerdata+Player::env
+    LDA playerdata+Entity::env
     CMP #$01    ;is player climbing?
     BEQ EndProcessPlayer
-    LDA playerdata+Player::state
+    LDA playerdata+Entity::state
     AND #%00100000
     ;bitmask against falling %00100000 if necessary
     CMP #$20
     BEQ PlayerFall
 ;check stand state
-    LDA playerdata+Player::state
+    LDA playerdata+Entity::state
     AND #%00000010
     CMP #$00
     BEQ PlayerIdle
     JMP EndProcessPlayer
 PlayerFall:
     ;to get it working, fall at a rate of 2 pps. Math later.
-    INC playerdata+Player::ypos
-    INC playerdata+Player::ypos
+    INC playerdata+Entity::ypos
+    INC playerdata+Entity::ypos
     JMP EndProcessPlayer
 PlayerIdle:
     LDA #$00
     STA animaframes
-    STA playersprite+PlayerSprite::topleft
+    STA playerdata+Entity::tlspr
     LDA #$01
-    STA playersprite+PlayerSprite::topright
+    STA playerdata+Entity::trspr
     LDA #$10
-    STA playersprite+PlayerSprite::btmleft
+    STA playerdata+Entity::blspr
     LDA #$11
-    STA playersprite+PlayerSprite::btmright
+    STA playerdata+Entity::brspr
 EndProcessPlayer:
+    ;update ENTITIES array with current player data
+    ;first add playerdata to entitiesbuffer. this is inefficient in cycles, but to have a duplicate subroutine is inefficient in memory.
+    ;TODO: find solution to above issue
+    LDX #$00
+    LDY #$00
+CopyPDtoEBLoop:
+    LDA playerdata, x
+    STA entitybuffer, x
+    INX
+    INY
+    CPY #$0F    ;15 items in entity struct
+    BNE CopyPDtoEBLoop
+    LDX #$01    ;X = ENTITIES index of player + 1
+    LDA #$01
+    STA checkvar    ;set checkvar to 1 so subroutine does not mess with stack
+    JSR WriteEntityFromBuffer ;
+
+
+    ;check for collisions from new position
     JSR CheckPlayerCollisionDown    ;check downward collision every frame
     JSR CheckPlayerCollisionLeft
     JSR CheckPlayerCollisionRight
@@ -880,11 +923,11 @@ CheckPlayerCollisionDown: ;IN <--- direction of check (Y)
     PHA
     ;LDA
     ;check facing to determine which edge to test
-    LDA playerdata+Player::state
+    LDA playerdata+Entity::state
     AND #%10000000      ;check against facing right
     BEQ CheckFacingLeft ;if not, go to left
 CheckFacingRight:
-    LDA playerdata+Player::xpos    ;Use pixel X for finer tune
+    LDA playerdata+Entity::xpos    ;Use pixel X for finer tune
     STA colltemp3
     LSR
     LSR
@@ -895,7 +938,7 @@ CheckFacingRight:
     STA colltemp2   ;collmap x byte
     JMP ContinueCheck
 CheckFacingLeft:
-    LDA playerdata+Player::xpos    ;Use pixel X for finer tune
+    LDA playerdata+Entity::xpos    ;Use pixel X for finer tune
     CLC
     ADC #$10
     STA colltemp3
@@ -907,7 +950,7 @@ CheckFacingLeft:
     LSR
     STA colltemp2   ;collmap x byte
 ContinueCheck:
-    LDA playerdata+Player::metay
+    LDA playerdata+Entity::metay
     ASL
     ASL
     CLC
@@ -944,16 +987,16 @@ MaskOutZero:
     CMP #%01000000
     BNE NoGround  ;if not a 01, no collision
 ZeroChangeState:
-    LDA playerdata+Player::metay
+    LDA playerdata+Entity::metay
     ASL
     ASL
     ASL
     ASL
-    STA playerdata+Player::ypos ;set player's actual Ypos to the top of the meta tile.
-    LDA playerdata+Player::state
+    STA playerdata+Entity::ypos ;set player's actual Ypos to the top of the meta tile.
+    LDA playerdata+Entity::state
     AND #%11000000
     ORA #%00000001
-    STA playerdata+Player::state
+    STA playerdata+Entity::state
     JMP ReturnFromColl
 MaskOutOne:
     LDX colltemp1
@@ -962,16 +1005,16 @@ MaskOutOne:
     CMP #%00010000
     BNE NoGround  ;if not a 01, no collision
 OneChangeState:
-    LDA playerdata+Player::metay
+    LDA playerdata+Entity::metay
     ASL
     ASL
     ASL
     ASL
-    STA playerdata+Player::ypos ;set player's actual Ypos to the top of the meta tile.
-    LDA playerdata+Player::state
+    STA playerdata+Entity::ypos ;set player's actual Ypos to the top of the meta tile.
+    LDA playerdata+Entity::state
     AND #%11000000
     ORA #%00000001
-    STA playerdata+Player::state
+    STA playerdata+Entity::state
     JMP ReturnFromColl
 MaskOutTwo:
 ;left side check
@@ -981,16 +1024,16 @@ MaskOutTwo:
     CMP #%00000100
     BNE NoGround  ;if not a 01, no collision
 TwoChangeState:
-    LDA playerdata+Player::metay
+    LDA playerdata+Entity::metay
     ASL
     ASL
     ASL
     ASL
-    STA playerdata+Player::ypos ;set player's actual Ypos to the top of the meta tile.
-    LDA playerdata+Player::state
+    STA playerdata+Entity::ypos ;set player's actual Ypos to the top of the meta tile.
+    LDA playerdata+Entity::state
     AND #%11000000
     ORA #%00000001
-    STA playerdata+Player::state
+    STA playerdata+Entity::state
     JMP ReturnFromColl
 MaskOutThree:
 ;left side check
@@ -1000,26 +1043,26 @@ MaskOutThree:
     CMP #%00000001
     BNE NoGround  ;if not a 01, no collision
 ThreeChangeState:
-    LDA playerdata+Player::metay
+    LDA playerdata+Entity::metay
     ASL
     ASL
     ASL
     ASL
-    STA playerdata+Player::ypos ;set player's actual Ypos to the top of the meta tile.
-    LDA playerdata+Player::state
+    STA playerdata+Entity::ypos ;set player's actual Ypos to the top of the meta tile.
+    LDA playerdata+Entity::state
     AND #%11000000
     ORA #%00000001
-    STA playerdata+Player::state
+    STA playerdata+Entity::state
     JMP ReturnFromColl
 NoGround:
-    LDA playerdata+Player::state
+    LDA playerdata+Entity::state
     AND #%00010000    ;is the player climbing?
     CMP #%00010000
     BEQ ReturnFromColl
-    LDA playerdata+Player::state
+    LDA playerdata+Entity::state
     AND #%11000000
     ORA #%00100000
-    STA playerdata+Player::state ;set player state to falling
+    STA playerdata+Entity::state ;set player state to falling
 ReturnFromColl:
     PLA
     TAX
@@ -1030,18 +1073,18 @@ CheckPlayerCollisionLeft:
     PHA
     TXA
     PHA
-    LDA playerdata+Player::metax
+    LDA playerdata+Entity::metax
     LSR
     LSR
     STA colltemp1
-    LDA playerdata+Player::metay
+    LDA playerdata+Entity::metay
     ASL
     ASL
     CLC
     ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
     STA colltemp2   ;Location of player byte in coll map
     ;find bit pair
-    LDA playerdata+Player::metax
+    LDA playerdata+Entity::metax
     AND #%00000011
     CMP #$00
     BEQ MaskOutZeroL
@@ -1060,7 +1103,7 @@ MaskOutZeroL:
     BEQ ReturnFromCollL
     CMP #%10000000
     BEQ ReturnFromCollL
-    INC playerdata+Player::xpos
+    INC playerdata+Entity::xpos
     JMP ReturnFromCollL
 MaskOutOneL:
     LDX colltemp2
@@ -1070,7 +1113,7 @@ MaskOutOneL:
     BEQ ReturnFromCollL
     CMP #%00100000
     BEQ ReturnFromCollL
-    INC playerdata+Player::xpos
+    INC playerdata+Entity::xpos
     JMP ReturnFromCollL
 MaskOutTwoL:
     LDX colltemp2
@@ -1080,7 +1123,7 @@ MaskOutTwoL:
     BEQ ReturnFromCollL
     CMP #%00001000
     BEQ ReturnFromCollL
-    INC playerdata+Player::xpos
+    INC playerdata+Entity::xpos
     JMP ReturnFromCollL
 MaskOutThreeL:
     LDX colltemp2
@@ -1090,7 +1133,7 @@ MaskOutThreeL:
     BEQ ReturnFromCollL
     CMP #%00000010
     BEQ ReturnFromCollL
-    INC playerdata+Player::xpos
+    INC playerdata+Entity::xpos
 ReturnFromCollL:
     PLA
     TAX
@@ -1101,20 +1144,20 @@ CheckPlayerCollisionRight:
     PHA
     TXA
     PHA
-    LDA playerdata+Player::metax
+    LDA playerdata+Entity::metax
     CLC
     ADC #$01
     LSR
     LSR
     STA colltemp1
-    LDA playerdata+Player::metay
+    LDA playerdata+Entity::metay
     ASL
     ASL
     CLC
     ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
     STA colltemp2   ;Location of player byte in coll map
     ;find bit pair
-    LDA playerdata+Player::metax
+    LDA playerdata+Entity::metax
     AND #%00000011
     CMP #$00
     BEQ MaskOutZeroR
@@ -1133,7 +1176,7 @@ MaskOutZeroR:
     BEQ ReturnFromCollR
     CMP #%00100000
     BEQ ReturnFromCollR
-    DEC playerdata+Player::xpos
+    DEC playerdata+Entity::xpos
     JMP ReturnFromCollR
 MaskOutOneR:
     LDX colltemp2
@@ -1143,7 +1186,7 @@ MaskOutOneR:
     BEQ ReturnFromCollR
     CMP #%00001000
     BEQ ReturnFromCollR
-    DEC playerdata+Player::xpos
+    DEC playerdata+Entity::xpos
     JMP ReturnFromCollR
 MaskOutTwoR:
     LDX colltemp2
@@ -1153,7 +1196,7 @@ MaskOutTwoR:
     BEQ ReturnFromCollR
     CMP #%00000010
     BEQ ReturnFromCollR
-    DEC playerdata+Player::xpos
+    DEC playerdata+Entity::xpos
     JMP ReturnFromCollR
 MaskOutThreeR:
     LDX colltemp2
@@ -1163,7 +1206,7 @@ MaskOutThreeR:
     BEQ ReturnFromCollR
     CMP #%10000000
     BEQ ReturnFromCollR
-    DEC playerdata+Player::xpos
+    DEC playerdata+Entity::xpos
 ReturnFromCollR:
     PLA
     TAX
@@ -1175,7 +1218,7 @@ CheckPlayerCollisionOver:
     PHA
     TXA
     PHA
-    LDA playerdata+Player::xpos
+    LDA playerdata+Entity::xpos
     CLC
     ADC #$08
     LSR
@@ -1185,14 +1228,14 @@ CheckPlayerCollisionOver:
     LSR
     LSR
     STA colltemp1
-    LDA playerdata+Player::metay
+    LDA playerdata+Entity::metay
     ASL
     ASL
     CLC
     ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
     STA colltemp2   ;Location of player byte in coll map
     ;find bit pair
-    LDA playerdata+Player::xpos
+    LDA playerdata+Entity::xpos
     CLC
     ADC #$08
     LSR
@@ -1216,7 +1259,7 @@ MaskOutZeroO:
     CMP #%10000000
     BNE NoEnvCondition
     LDA #$01            ;01 will mean over a climbable
-    STA playerdata+Player::env
+    STA playerdata+Entity::env
     JMP ReturnFromCollR
 MaskOutOneO:
     LDX colltemp2
@@ -1225,7 +1268,7 @@ MaskOutOneO:
     CMP #%00100000
     BNE NoEnvCondition
     LDA #$01            ;01 will mean over a climbable
-    STA playerdata+Player::env
+    STA playerdata+Entity::env
     JMP ReturnFromCollR
 MaskOutTwoO:
     LDX colltemp2
@@ -1234,7 +1277,7 @@ MaskOutTwoO:
     CMP #%00001000
     BNE NoEnvCondition
     LDA #$01            ;01 will mean over a climbable
-    STA playerdata+Player::env
+    STA playerdata+Entity::env
     JMP ReturnFromCollR
 MaskOutThreeO:
     LDX colltemp2
@@ -1243,12 +1286,12 @@ MaskOutThreeO:
     CMP #%00000010
     BNE NoEnvCondition
     LDA #$01            ;01 will mean over a climbable
-    STA playerdata+Player::env
+    STA playerdata+Entity::env
     JMP ReturnFromCollO
 NoEnvCondition:
     LDA #$00
-    STA playerdata+Player::env
-    LDA playerdata+Player::state
+    STA playerdata+Entity::env
+    LDA playerdata+Entity::state
     AND #%11001111
 ReturnFromCollO:
     PLA
@@ -1257,8 +1300,43 @@ ReturnFromCollO:
     RTS
 
 
+;------------------Entity Change Direction Subroutine------------------------------
+ChangePlayerFacing: ;push A and Y, doesn't use
+    PHA
+    TYA
+    PHA
+    LDA playerdata+Entity::tlspr
+    TAY
+    LDA playerdata+Entity::trspr
+    STA playerdata+Entity::tlspr
+    TYA
+    STA playerdata+Entity::trspr
+    LDA playerdata+Entity::blspr
+    TAY
+    LDA playerdata+Entity::brspr
+    STA playerdata+Entity::blspr
+    TYA
+    STA playerdata+Entity::brspr
+    LDA playerdata+Entity::tlpal
+    EOR #$04
+    STA playerdata+Entity::tlpal
+    LDA playerdata+Entity::trpal
+    EOR #$04
+    STA playerdata+Entity::trpal
+    LDA playerdata+Entity::blpal
+    EOR #$04
+    STA playerdata+Entity::blpal
+    LDA playerdata+Entity::brpal
+    EOR #$04
+    STA playerdata+Entity::brpal
+    PLA
+    TAY
+    PLA
+    RTS
+
+
 ;--*--*--*--*--*--*--*--*--* STORE ENTITIES SUBROUTINE   *--*--*--*--*--*--*--*--*--*--*--
-StoreEntity: ;subroutine
+StoreEntity: ;full subroutine, checkvar = #$00
     PHA
     TXA
     PHA
@@ -1271,9 +1349,10 @@ FindEndOfArray:
     CMP #$FF
     BNE FindEndOfArray
     INX
-WriteEntityFromBuffer: ;can this loop with y?
-    DEX
-    LDA entitybuffer+Entity::Type
+WriteEntityFromBuffer: ;can this loop with y?   Call this is a subroutine to update. Set checkvar to #$01 (or anything but 00)
+;IN <--- X = index of ENTITIES array + 1
+    DEX     ;overwrite $FF
+    LDA entitybuffer+Entity::type
     STA ENTITIES, x
     INX
     LDA entitybuffer+Entity::xpos
@@ -1294,6 +1373,9 @@ WriteEntityFromBuffer: ;can this loop with y?
     LDA entitybuffer+Entity::blspr
     STA ENTITIES, x
     INX
+    LDA entitybuffer+Entity::brspr
+    STA ENTITIES, x
+    INX
     LDA entitybuffer+Entity::tlpal
     STA ENTITIES, x
     INX
@@ -1306,6 +1388,18 @@ WriteEntityFromBuffer: ;can this loop with y?
     LDA entitybuffer+Entity::brpal
     STA ENTITIES, x
     INX
+    LDA entitybuffer+Entity::env
+    STA ENTITIES, x
+    INX
+    LDA entitybuffer+Entity::metax
+    STA ENTITIES, x
+    INX
+    LDA entitybuffer+Entity::metay
+    STA ENTITIES, x
+    LDA checkvar
+    CMP #$00
+    BNE ReturnFromStoreEntity
+    INX
     LDA #$FF
     STA ENTITIES, x
     PLA
@@ -1313,6 +1407,7 @@ WriteEntityFromBuffer: ;can this loop with y?
     PLA
     TAX
     PLA
+ReturnFromStoreEntity:
     RTS
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    NMI / VBLANK    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -1334,46 +1429,54 @@ VBLANK:
     LDA #$02        ;high byte of graphics page $0200
     STA spritemem+1
 
-DRAWENTITIES:    ;move back to entity manager later. THis is terrible Jam code.
-
+DRAWENTITIES:   
 BeginLoadEntityLoop:
     LDX #$00
 LoadEntityLoop:
     INX ;go past type
-    LDA ENTITIES, x ;type
+    LDA ENTITIES, x     ;xpos
     STA metatile+Metatile::xpos
     INX
-    LDA ENTITIES, x
+    LDA ENTITIES, x     ;ypos
     STA metatile+Metatile::ypos
     INX
-    INX ;go past state
     LDA ENTITIES, x
+    STA metatile+Metatile::state
+    INX 
+    LDA ENTITIES, x     ;tlspr
     STA metatile+Metatile::spritetl
     INX
-    LDA ENTITIES, x
+    LDA ENTITIES, x     ;trspr
     STA metatile+Metatile::spritetr
     INX
-    LDA ENTITIES, x
+    LDA ENTITIES, x     ;blspr
     STA metatile+Metatile::spritebl
     INX
-    LDA ENTITIES, x
+    LDA ENTITIES, x     ;brspr
     STA metatile+Metatile::spritebr
     INX
-    LDA ENTITIES, x
+    LDA ENTITIES, x     ;tlpal
     STA metatile+Metatile::atttl
     INX
-    LDA ENTITIES, x
+    LDA ENTITIES, x     ;trpal
     STA metatile+Metatile::atttr
     INX
-    LDA ENTITIES, x
+    LDA ENTITIES, x     ;blpal
     STA metatile+Metatile::attbl
     INX
-    LDA ENTITIES, x
+    LDA ENTITIES, x     ;brpal
     STA metatile+Metatile::attbr
-    INX
-    ;JMP DRAWMETATILE
+    INX                 ;env
+    INX                 ;metax
+    INX                 ;metay
+    INX                 ;next entity::type OR stop byte
+CheckMetatileFacing:
+    LDA metatile+Metatile::state
+    AND #%11000000
+    CMP #%10000000
+    BNE DRAWMETATILEHRZMIRROR
 ;-----------------------------------------------------------------------------
-    DRAWMETATILE: ;in--struct of meta tile data
+DRAWMETATILE: ;in--struct of meta tile data
     LDA metatile+Metatile::ypos ; y
     STA (spritemem), y
     INY
@@ -1436,6 +1539,75 @@ LoadEntityLoop:
     ADC #$08
     STA (spritemem), y
     INY
+    JMP ClearMetatile
+DRAWMETATILEHRZMIRROR: ;in--struct of meta tile data
+;swap tiles and set horizontal flip
+    LDA metatile+Metatile::ypos ; y
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::spritetr ; tile
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::atttl ; palette etc
+    ORA #$40
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::xpos   ; x
+    STA (spritemem), y
+    INY
+
+    ;bottom left sprite
+    LDA metatile+Metatile::ypos ; y
+    CLC
+    ADC #$08   ;Add 8 pixels to y-pos for second sprite
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::spritebr ; tile
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::attbl   ;palette
+    ORA #$40
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::xpos ; x position
+    STA (spritemem), y
+    INY
+
+    ;top right sprite
+    LDA metatile+Metatile::ypos
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::spritetl     ;same as top left but we will flip it and add 8 to xpos
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::atttr     ;palette %01000001   palette 1, flip horizontal
+    ORA #$40
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::xpos
+    CLC
+    ADC #$08
+    STA (spritemem), y
+    INY
+
+    ;bottom right
+    LDA metatile+Metatile::ypos ; y
+    CLC
+    ADC #$08   ;Add 8 pixels to y-pos for second sprite
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::spritebl   
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::attbr   ;palette with h-flip
+    ORA #$40
+    STA (spritemem), y
+    INY
+    LDA metatile+Metatile::xpos
+    CLC
+    ADC #$08
+    STA (spritemem), y
+    INY
     ;JMP DoneDrawingMetatile
 ClearMetatile:
     LDA #$00
@@ -1447,13 +1619,8 @@ DoneDrawingMetatile:
 CHECKENDSPRITE:
     LDA ENTITIES, x
     CMP #$FF
-    ;TXA
-    ;CLC
-    ;ADC #$01
-    ;TAX
-    ;CPX totalsprites
     BEQ DONESPRITE
-    JMP DRAWENTITIES
+    JMP LoadEntityLoop
 
 DONESPRITE:
 ;DMA copy sprites
@@ -1483,7 +1650,7 @@ donewithppu:
     STA $07FF
 
     ;pull registers from stack - Y, X, P, A
-    PLA ;push registers - A, P, X, Y
+    PLA 
     TAY
     PLA
     TAX
