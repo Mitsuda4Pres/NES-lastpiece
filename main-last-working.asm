@@ -121,7 +121,6 @@ blockrow:   .res 16
 spritemem:  .res 2
 ptr:        .res 2
 metatile:   .res .sizeof(Metatile)
-entitybuffer:   .res .sizeof(Entity)
 
 .segment "CODE"
 
@@ -162,94 +161,56 @@ CLEARMEM:
     INX
     BNE CLEARMEM
 
-    LDX #$00
+    
 InitializePlayer:
-    LDA #EntityType::PlayerType
-    STA ENTITIES, x
-    INX
     LDA #$20
     STA playerdata+Player::xpos
-    STA ENTITIES, x
-    INX   
     LDA #$00
     STA playerdata+Player::ypos
-    STA ENTITIES, x
-    INX
     STA playerdata+Player::env
     LDA #%10100000  ;falling, facing right
     STA playerdata+Player::state
-    STA ENTITIES, x
-    INX
     LDA #$00
     STA playersprite+PlayerSprite::topleft
-    STA ENTITIES, x
-    INX
     LDA #$01
     STA playersprite+PlayerSprite::topright
-    STA ENTITIES, x
-    INX
     LDA #$10
     STA playersprite+PlayerSprite::btmleft
-    STA ENTITIES, x
-    INX
     LDA #$11
     STA playersprite+PlayerSprite::btmright
-    STA ENTITIES, x
-    INX
     LDA #$00
     STA playersprite+PlayerSprite::tlpal
     STA playersprite+PlayerSprite::trpal
     STA playersprite+PlayerSprite::blpal
     STA playersprite+PlayerSprite::brpal
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
 
-InitializeMedallion:
+    LDY #$00
+InitializeEntities:
     ;The only startingg entity is the last medallion piece
     ;In the future, I can have an array of starting entites somewhere to read from
     LDA #EntityType::Treasure
-    STA ENTITIES, x
-    INX
+    STA $0400
     LDA #$C0    ;xpos
-    STA ENTITIES, x
-    INX
+    STA $0401
     LDA #$E0    ;ypos
-    STA ENTITIES, x
-    INX
+    STA $0402
     LDA #$00
-    STA ENTITIES, x
-    INX
+    STA $0403
     LDA #$26
-    STA ENTITIES, x
-    INX
+    STA $0404
     LDA #$27
-    STA ENTITIES, x
-    INX
+    STA $0405
     LDA #$36
-    STA ENTITIES, x
-    INX
+    STA $0406
     LDA #$37
-    STA ENTITIES, x
-    INX
+    STA $0407
     LDA #$01
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    LDA #$FF
-    STA ENTITIES, x
-    INX
-    LDA #$0A ;player plus medallion pieces
+    STA $0408
+    STA $0409
+    STA $040A
+    STA $040B
+
+    LDA #$05 ;player plus medallion pieces
     STA totalsprites
 ;Clear register and set palette address
     LDA $2002
@@ -1256,65 +1217,6 @@ ReturnFromCollO:
     PLA
     RTS
 
-
-;--*--*--*--*--*--*--*--*--* STORE ENTITIES SUBROUTINE   *--*--*--*--*--*--*--*--*--*--*--
-StoreEntity: ;subroutine
-    PHA
-    TXA
-    PHA
-    TYA
-    PHA
-    LDX #$00
-    LDY #$00
-FindEndOfArray:
-    LDA ENTITIES, x
-    CMP #$FF
-    BNE FindEndOfArray
-    INX
-WriteEntityFromBuffer: ;can this loop with y?
-    DEX
-    LDA entitybuffer+Entity::Type
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::xpos
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::ypos
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::state
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::tlspr
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::trspr
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::blspr
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::tlpal
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::trpal
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::blpal
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::brpal
-    STA ENTITIES, x
-    INX
-    LDA #$FF
-    STA ENTITIES, x
-    PLA
-    TAY
-    PLA
-    TAX
-    PLA
-    RTS
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    NMI / VBLANK    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 VBLANK:
     PHA ;push registers - A, P, X, Y
@@ -1335,43 +1237,126 @@ VBLANK:
     STA spritemem+1
 
 DRAWENTITIES:    ;move back to entity manager later. THis is terrible Jam code.
-
-BeginLoadEntityLoop:
-    LDX #$00
-LoadEntityLoop:
-    INX ;go past type
-    LDA ENTITIES, x ;type
-    STA metatile+Metatile::xpos
-    INX
-    LDA ENTITIES, x
+    CPX #$00    ;should start with x=0 - player sprite
+    BEQ PLAYERSPRITE
+    CPX #$01
+    BEQ LoadMedallion1
+    CPX #$02
+    BEQ GoToLoadMedallion2
+    CPX #$03
+    BEQ GoToLoadMedallion3
+    JMP DONESPRITE
+GoToLoadMedallion2:
+    JMP LoadMedallion2
+GoToLoadMedallion3:
+    JMP LoadMedallion3
+    ;CMP #EntityType::PlayerType
+    ;BEQ PLAYERSPRITE
+    ;JMP CHECKENDSPRITE
+    ;see https://www.nesdev.org/wiki/PPU_OAM
+    ;top left sprite
+PLAYERSPRITE:
+    LDA playerdata+Player::state
+    AND #%11000000
+    CMP #$80
+    BNE LoadPlayerFacingLeft
+LoadPlayerFacingRight:
+    LDA playerdata+Player::ypos
     STA metatile+Metatile::ypos
-    INX
-    INX ;go past state
-    LDA ENTITIES, x
+    LDA playerdata+Player::xpos
+    STA metatile+Metatile::xpos
+    LDA playersprite+PlayerSprite::topleft
     STA metatile+Metatile::spritetl
-    INX
-    LDA ENTITIES, x
+    LDA playersprite+PlayerSprite::topright
     STA metatile+Metatile::spritetr
-    INX
-    LDA ENTITIES, x
+    LDA playersprite+PlayerSprite::btmleft
     STA metatile+Metatile::spritebl
-    INX
-    LDA ENTITIES, x
+    LDA playersprite+PlayerSprite::btmright
     STA metatile+Metatile::spritebr
-    INX
-    LDA ENTITIES, x
+    LDA #$00
     STA metatile+Metatile::atttl
-    INX
-    LDA ENTITIES, x
     STA metatile+Metatile::atttr
-    INX
-    LDA ENTITIES, x
     STA metatile+Metatile::attbl
-    INX
-    LDA ENTITIES, x
     STA metatile+Metatile::attbr
-    INX
-    ;JMP DRAWMETATILE
+    JMP DRAWMETATILE
+LoadPlayerFacingLeft:
+    LDA playerdata+Player::ypos
+    STA metatile+Metatile::ypos
+    LDA playerdata+Player::xpos
+    STA metatile+Metatile::xpos
+    LDA playersprite+PlayerSprite::topright
+    STA metatile+Metatile::spritetl
+    LDA playersprite+PlayerSprite::topleft
+    STA metatile+Metatile::spritetr
+    LDA playersprite+PlayerSprite::btmright
+    STA metatile+Metatile::spritebl
+    LDA playersprite+PlayerSprite::btmleft
+    STA metatile+Metatile::spritebr
+    LDA #$40
+    STA metatile+Metatile::atttl
+    STA metatile+Metatile::atttr
+    STA metatile+Metatile::attbl
+    STA metatile+Metatile::attbr
+    JMP DRAWMETATILE
+LoadMedallion1:
+    LDA #$08
+    STA metatile+Metatile::ypos
+    LDA #$D8
+    STA metatile+Metatile::xpos
+    LDA #$20
+    STA metatile+Metatile::spritetl
+    LDA #$21
+    STA metatile+Metatile::spritetr
+    LDA #$30
+    STA metatile+Metatile::spritebl
+    LDA #$31
+    STA metatile+Metatile::spritebr
+    LDA #$01
+    STA metatile+Metatile::atttl
+    STA metatile+Metatile::atttr
+    STA metatile+Metatile::attbl
+    STA metatile+Metatile::attbr
+    JMP DRAWMETATILE
+LoadMedallion2:
+    LDA #$08
+    STA metatile+Metatile::ypos
+    LDA #$E8
+    STA metatile+Metatile::xpos
+    LDA #$22
+    STA metatile+Metatile::spritetl
+    LDA #$23
+    STA metatile+Metatile::spritetr
+    LDA #$32
+    STA metatile+Metatile::spritebl
+    LDA #$33
+    STA metatile+Metatile::spritebr
+    LDA #$01
+    STA metatile+Metatile::atttl
+    STA metatile+Metatile::atttr
+    STA metatile+Metatile::attbl
+    STA metatile+Metatile::attbr
+    JMP DRAWMETATILE
+LoadMedallion3:
+    LDA #$18
+    STA metatile+Metatile::ypos
+    LDA #$D8
+    STA metatile+Metatile::xpos
+    LDA #$24
+    STA metatile+Metatile::spritetl
+    LDA #$25
+    STA metatile+Metatile::spritetr
+    LDA #$34
+    STA metatile+Metatile::spritebl
+    LDA #$35
+    STA metatile+Metatile::spritebr
+    LDA #$01
+    STA metatile+Metatile::atttl
+    STA metatile+Metatile::atttr
+    STA metatile+Metatile::attbl
+    STA metatile+Metatile::attbr
+    JMP DRAWMETATILE
+
+
 ;-----------------------------------------------------------------------------
     DRAWMETATILE: ;in--struct of meta tile data
     LDA metatile+Metatile::ypos ; y
@@ -1445,13 +1430,11 @@ DoneDrawingMetatile:
 
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 CHECKENDSPRITE:
-    LDA ENTITIES, x
-    CMP #$FF
-    ;TXA
-    ;CLC
-    ;ADC #$01
-    ;TAX
-    ;CPX totalsprites
+    TXA
+    CLC
+    ADC #$01
+    TAX
+    CPX totalsprites
     BEQ DONESPRITE
     JMP DRAWENTITIES
 
