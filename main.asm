@@ -45,6 +45,9 @@ ENTITIES        = $0600
     xpos    .byte
     ypos    .byte
     state   .byte
+    ;Player States
+    ;faceright faceleft      fall  climb   hurt  jump  walk standing
+    ;0         0               0     0       0     0    0     0 -
     ;States for Treasure: 0 - untouched, 1 - retrieved
     ;States for Enemy: 0 - dead, 1 - alive, 2 - attacking
     tlspr      .byte
@@ -60,26 +63,6 @@ ENTITIES        = $0600
     metay       .byte
 .endstruct
 
-.struct Player
-    xpos .byte
-    ypos .byte
-    metax .byte
-    metay .byte
-    state .byte  ;faceright faceleft      fall  climb   hurt  jump  walk standing
-                 ;0         0               0     0       0     0    0     0 -
-    env   .byte
-.endstruct
-
-.struct PlayerSprite    ;directions based on facing right. swap when facing left.
-    topleft     .byte
-    topright    .byte
-    btmleft     .byte
-    btmright    .byte
-    tlpal       .byte
-    trpal       .byte
-    blpal       .byte
-    brpal       .byte
-.endstruct
 
 .struct Metatile
     ypos        .byte       
@@ -115,7 +98,6 @@ colltemp3:          .res 1
 animaframes:        .res 1
 totalsprites:       .res 1
 playerdata:         .res .sizeof(Entity)            ;15b
-playersprite:       .res .sizeof(PlayerSprite)      ;8b
 metatile:           .res .sizeof(Metatile)          ;10b
 entitybuffer:       .res .sizeof(Entity)            ;12b
 blockrow:           .res 16
@@ -182,34 +164,26 @@ InitializePlayer:
     STA ENTITIES, x
     INX
     LDA #$00
-    STA playersprite+PlayerSprite::topleft
     STA playerdata+Entity::tlspr
     STA ENTITIES, x
     INX
     LDA #$01
-    STA playersprite+PlayerSprite::topright
     STA playerdata+Entity::trspr
     STA ENTITIES, x
     INX
     LDA #$10
-    STA playersprite+PlayerSprite::btmleft
     STA playerdata+Entity::blspr
     STA ENTITIES, x
     INX
     LDA #$11
-    STA playersprite+PlayerSprite::btmright
     STA playerdata+Entity::brspr
     STA ENTITIES, x
     INX
     LDA #$00
     ;TODO: remove playersprite struct, included into entity struct
-    STA playersprite+PlayerSprite::tlpal
     STA playerdata+Entity::tlpal
-    STA playersprite+PlayerSprite::trpal
     STA playerdata+Entity::trpal
-    STA playersprite+PlayerSprite::blpal
     STA playerdata+Entity::blpal
-    STA playersprite+PlayerSprite::brpal
     STA playerdata+Entity::brpal
     STA ENTITIES, x
     INX
