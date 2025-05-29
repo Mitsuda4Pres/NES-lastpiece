@@ -58,7 +58,7 @@ ENTITIES        = $0600
     trpal       .byte
     blpal       .byte
     brpal       .byte
-    env         .byte
+    env         .byte   ;$00 - nothing, $01 - climbable
     metax       .byte
     metay       .byte
 .endstruct
@@ -886,63 +886,67 @@ waitfordrawtocomplete:
 
 ;;;;; ----- Logical subroutines ------ ;;;;;;
 CheckPlayerCollisionDown: ;IN <--- direction of check (Y)
-;TODO: Only worry about one directional check at a time
-;Player's  x/y position need to be translated into the 2-bit collision map then compared
-;with what appears directionally in the next tile in that direction. Then resolve.    
-
-;Player X/Y are given based on 256x240 pixel screen. To reduce to 16x15, divide by 16. I think that's 4 shifts.
-;Or perhaps object needs to expand to pixel level
     PHA
     TXA
     PHA
-    ;LDA
-    ;check facing to determine which edge to test
-    LDA playerdata+Entity::state
-    AND #%10000000      ;check against facing right
-    BEQ CheckFacingLeft ;if not, go to left
-CheckFacingRight:
-    LDA playerdata+Entity::xpos    ;Use pixel X for finer tune
-    STA colltemp3
-    LSR
-    LSR
-    LSR
-    LSR
-    LSR
-    LSR
-    STA colltemp2   ;collmap x byte
-    JMP ContinueCheck
-CheckFacingLeft:
-    LDA playerdata+Entity::xpos    ;Use pixel X for finer tune
+    TYA
+    PHA
+    ;I still want to try this with a check one pixel in from the edge. can I use the stack for my vars?
+    LDA playerdata+Entity::xpos
     CLC
-    ADC #$10
-    STA colltemp3
+    ADC #$01    ;one pixel in from left edge - x1
+    TAX         ;store in X reg
+    CLC
+    ADC #$0E    ;plus 14 more to get one pixel in from right edge - x2
+    TAY         ;store on Y
+    LDA playerdata+Entity::ypos
+    CLC
+    ADC #$10    ;y pos of player's bottom edge (feet) - y
+    LSR         ;divide by 16
+    LSR         ;meta y of player's feet
     LSR
     LSR
-    LSR
-    LSR
-    LSR
-    LSR
-    STA colltemp2   ;collmap x byte
-ContinueCheck:
-    LDA playerdata+Entity::metay
     ASL
     ASL
+    STA checkvar         ;store in checkvar
+    ;Get collmap position of (x1,y) and (x2, y) then check if tile below is solid. If both are NOT solid (== $01), then fall.
+    ;1) Divide x by 16
+    ;2) That number + y = test cell
+    ;3) if collmap, test cell is $01, solid.
+TestX1:
+    TXA
+    LSR
+    LSR
+    LSR
+    LSR     ;meta x
+    PHA
+    LSR
+    LSR     ;collmap x
+    STA colltemp2
+    LDA #$00
+    STA colltemp3
+    JMP ContinueTest
+TestX2:
+    TYA
+    LSR
+    LSR
+    LSR
+    LSR
+    PHA
+    LSR
+    LSR
+    STA colltemp2
+    LDA #$01
+    STA colltemp3
+ContinueTest:
+    LDA colltemp2   ;0, 1, 2 or 3
     CLC
-    ADC colltemp2   ;Add x byte to Y byte to find byte location in collmap
-    ;Once "inside" the byte, bit position can be found with metax. But I need the bit that is "below" it in the map,
-    ;which is the bit that is 4 bytes away. Which may render the above STA useless since I'm still modifying this value
-    CLC
-    ADC #$04    ;+4 takes us "down a row" to the meta tile below. This logic will change per subroutine
-    STA colltemp1   ;target byte, time to find the bit
-    SEC
-    SBC #$3C
-    BCS ReturnFromCheckDown
-    LDA colltemp3       ;get x back
-    LSR
-    LSR
-    LSR
-    LSR
-    AND #%00000011              ;mask out last two bits. Result determines bit mask for target byte
+    ADC checkvar    ;x1 (col) + target y (row)  ; multiple of 4
+    TAX
+    LDA COLLMAPBANK, x ;get target byte
+    STA colltemp1
+    PLA     ;get back meta x
+    AND #%00000011
     CMP #$00
     BEQ MaskOutZero
     CMP #$01
@@ -950,98 +954,75 @@ ContinueCheck:
     CMP #$02
     BEQ MaskOutTwo
     CMP #$03
-    BNE ReturnFromCheckDown
+    BNE ReturnFromCollisionDown ;may be to far to branch
     JMP MaskOutThree
-ReturnFromCheckDown:
-    JMP ReturnFromColl
 MaskOutZero:
-    LDX colltemp1
-    LDA COLLMAPBANK, x ;Load target byte from collision map
+    LDA colltemp1
     AND #%11000000
-    CMP #%01000000
-    BNE NoGround  ;if not a 01, no collision
-ZeroChangeState:
-    LDA playerdata+Entity::metay
-    ASL
-    ASL
-    ASL
-    ASL
-    STA playerdata+Entity::ypos ;set player's actual Ypos to the top of the meta tile.
-    LDA playerdata+Entity::state
-    AND #%11000000
-    ORA #%00000001
-    STA playerdata+Entity::state
-    JMP ReturnFromColl
+    LSR
+    LSR
+    LSR
+    LSR
+    LSR
+    LSR
+    JMP Resolve
 MaskOutOne:
-    LDX colltemp1
-    LDA COLLMAPBANK, x ;Load target byte from collision map
+    LDA colltemp1
     AND #%00110000
-    CMP #%00010000
-    BNE NoGround  ;if not a 01, no collision
-OneChangeState:
-    LDA playerdata+Entity::metay
-    ASL
-    ASL
-    ASL
-    ASL
-    STA playerdata+Entity::ypos ;set player's actual Ypos to the top of the meta tile.
-    LDA playerdata+Entity::state
-    AND #%11000000
-    ORA #%00000001
-    STA playerdata+Entity::state
-    JMP ReturnFromColl
+    LSR
+    LSR
+    LSR
+    LSR
+    JMP Resolve
 MaskOutTwo:
-;left side check
-    LDX colltemp1
-    LDA COLLMAPBANK, x ;Load target byte from collision map
+    LDA colltemp1
     AND #%00001100
-    CMP #%00000100
-    BNE NoGround  ;if not a 01, no collision
-TwoChangeState:
-    LDA playerdata+Entity::metay
-    ASL
-    ASL
-    ASL
-    ASL
-    STA playerdata+Entity::ypos ;set player's actual Ypos to the top of the meta tile.
-    LDA playerdata+Entity::state
-    AND #%11000000
-    ORA #%00000001
-    STA playerdata+Entity::state
-    JMP ReturnFromColl
+    LSR
+    LSR
+    JMP Resolve
 MaskOutThree:
-;left side check
-    LDX colltemp1
-    LDA COLLMAPBANK, x ;Load target byte from collision map
+    LDA colltemp1
     AND #%00000011
-    CMP #%00000001
-    BNE NoGround  ;if not a 01, no collision
-ThreeChangeState:
-    LDA playerdata+Entity::metay
-    ASL
-    ASL
-    ASL
-    ASL
-    STA playerdata+Entity::ypos ;set player's actual Ypos to the top of the meta tile.
+Resolve:
+    CMP #$01
+    BEQ ReturnSolid     ;if x1 or x2 is over solid, we can stop here
+    ;CMP #$11            ;if x1 or x2 is over damaging, we can resolve?
+    ;BEQ SetX1Damaging
+    CMP #$10            ;climbable?
+    BEQ SetClimbable
+ContinueResolve:
+    LDA colltemp3       ;holding whether we checked x1 or x2
+    CMP #$01            ;if both points checked and no solid below, we must be falling
+    BEQ SetFalling
+    JMP TestX2
+SetClimbable:
+    LDA playerdata+Entity::env
+    ORA #%00010000
+    STA playerdata+Entity::env
+    JMP ContinueResolve
+SetFalling:
     LDA playerdata+Entity::state
-    AND #%11000000
-    ORA #%00000001
+    ORA #%00100000  ;turn on falling
+    AND #%11111110  ;turn off standing
     STA playerdata+Entity::state
-    JMP ReturnFromColl
-NoGround:
+    JMP ReturnFromCollisionDown
+ReturnSolid:            ;resolve collision here. in future, may be wise to separate resolutinon from check
+    LDA playerdata+Entity::ypos
+    AND #%11110000      ;return to "top" of metatile by zeroing out the low nibble (any pixels "below" the multiple of 16)
+    STA playerdata+Entity::ypos
     LDA playerdata+Entity::state
-    AND #%00010000    ;is the player climbing?
-    CMP #%00010000
-    BEQ ReturnFromColl
-    LDA playerdata+Entity::state
-    AND #%11000000
-    ORA #%00100000
-    STA playerdata+Entity::state ;set player state to falling
-ReturnFromColl:
+    ORA #%00000001      ;set status to standing
+    AND #%11011111      ;if falling, stop falling
+    STA playerdata+Entity::state
+ReturnFromCollisionDown:
+    PLA
+    TAY
     PLA
     TAX
     PLA
     RTS
+
+
 ;----------------------------------------------------------------------------------------------------
 CheckPlayerCollisionLeft:
     PHA
@@ -1397,7 +1378,7 @@ VBLANK:
 
 ;begin populating the OAM data in memory
     LDX #$00        ;x will index mem locations of entity data (getter)
-    LDA #$00        ;low byt of graphics page $0200
+    LDA #$00        ;low byte of graphics page $0200
     LDY #$00        ;y will index the OAM memory location (putter)
     STA spritemem
     LDA #$02        ;high byte of graphics page $0200
