@@ -30,6 +30,7 @@ JOYPAD1         = $4016
 JOYPAD2         = $4017
 
 ;;;Custom registers/maps
+WORLD           = $0440
 COLLMAPBANK     = $0500    ;one page is 256 bytes. Is this enough or do I bleed into 0600?
 ENTITIES        = $0600
 ;If I do a 2 bit coll map, each tile can have 4 properties: "not there", "solid", "climbable", "damaging"
@@ -41,18 +42,18 @@ ENTITIES        = $0600
 .endscope
 
 .struct Entity      ;15b
-    type    .byte
-    xpos    .byte
-    ypos    .byte
-    state   .byte
+    type        .byte
+    xpos        .byte
+    ypos        .byte
+    state       .byte
     ;Player States
     ;faceright faceleft      fall  climb   hurt  jump  walk standing
     ;0         0               0     0       0     0    0     0 -
     ;States for Treasure: 0 - untouched, 1 - retrieved
     ;States for Enemy: 0 - dead, 1 - alive, 2 - attacking
-    tlspr      .byte
-    trspr      .byte
-    blspr        .byte
+    tlspr       .byte
+    trspr       .byte
+    blspr       .byte
     brspr       .byte
     tlpal       .byte ;likely can reduce these to one palette byte, then one byte with bit flags for each quadrant for flips h and v
     trpal       .byte
@@ -63,25 +64,32 @@ ENTITIES        = $0600
     metay       .byte
 .endstruct
 
-
 .struct Metatile
     ypos        .byte       
     spritetl    .byte
     spritetr    .byte      
     spritebl    .byte      
     spritebr    .byte      
-    atttl         .byte
-    atttr         .byte
-    attbl         .byte
-    attbr         .byte
+    atttl       .byte
+    atttr       .byte
+    attbl       .byte
+    attbr       .byte
     xpos        .byte
     state       .byte
+.endstruct
+
+.struct Area
+    selfaddr1   .byte
+    selfaddr2   .byte
+    btoffset    .byte
+    cmoffset    .byte
 .endstruct
 
 .segment "STARTUP"
 
 ;I had to open of the zero page in nes.cfg to range from $0002 to $00FF. Idk if that will break something later.
 .segment "ZEROPAGE"
+gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - cutscene, $05 - screen transition
 controller:         .res 1    ;reserve 1 byte for controller input
 drawcomplete:       .res 1
 scrollx:            .res 1
@@ -102,8 +110,9 @@ metatile:           .res .sizeof(Metatile)          ;10b
 entitybuffer:       .res .sizeof(Entity)            ;12b
 blockrow:           .res 16
 spritemem:          .res 2
+level:              .res .sizeof(Area)              ;5b
+nextareaptr:        .res 2
 ptr:                .res 2
-
 ;total zero page reserved: 143b
 
 .segment "CODE"
@@ -145,6 +154,18 @@ CLEARMEM:
     INX
     BNE CLEARMEM
 
+    LDX #$00
+    LDY #$00
+InitializeFirstScreen:
+    LDA #<AREA0
+    STA level+Area::selfaddr1
+    LDA #>AREA0
+    STA level+Area::selfaddr2
+    LDA level+Area::selfaddr1 ;if not 2, try 1
+    CLC
+    ADC #$07
+    STA level+Area::selfaddr1
+    LDA level+Area::selfaddr2
     LDX #$00
 InitializePlayer:
     LDA #EntityType::PlayerType
@@ -272,344 +293,9 @@ PALETTELOAD:
     STA $2006           ;PPUADDR      we are using $2000 for graphics memory
     LDA #$00
     STA $2006           ;PPUADDR
-LoadScreen:
-;Background filling routine begins
-;This section will get subbed out for metatile implementation
-;For simplicity, I'm gonna only use one palette for the BG
-
-;Begin with canvas tile fill
-;Ok, can't do that because of the write order, unless maybe I build an array in RAM then store it.
-;I need a way to check against the block table for each location.
-
-;Instead of filling the whole nametable at once, I'm going to try writing to a buffer. We'll have a toggle as to whether
-;it's writing the top side or bottom side of the row. This may go slow, but let's see if it works first. If it all fits b/t v-blank, then
-;great, though if I find performance issues later, optimizing here should be my first move.
-    LDA #<BLOCKTABLE0   ;high byte
-    STA ptr+0
-    LDA #>BLOCKTABLE0   ;low byte
-    STA ptr+1
-    LDA #$00
-    STA counter
-    LDX #$00        ;outside counter goes to 15
-    LDY #$00     
-    TXA             ;$2007 write counter push to stack
-    PHA             
-ClearBlockRow:
-    TYA
-    PHA
-    LDA #$00
-    LDY #$00
-    LDX #$00
-ClearLoop:
-    STA blockrow, y
-    INY
-    CPY #$10
-    BNE ClearLoop
-    PLA
-    TAY
-GetBlocksInRow:
-    LDA (ptr), y
-    CMP #$FF
-    BEQ BlocksEndOfRow
-    STA blockrow, x      ;Ok, I'm using y as the pointer index, but I can't use it as the blockrow index too, it's offset
-    INX
-    INY
-    CPY #$FF       ;turns out it did happen lmao. Of course it did. If I make a check, it needs to be against $FF, assuming a level could be all blocks
-    BEQ BlocksEndOfRow ;this should never happen, but if we are iterating past 16, let's call it quits. Optimization, remove this
-    ;INC ptr+1           ;next address in BLOCKTABLE (Maybe needed if BLOCKTABLE is bigger than 256)
-    JMP GetBlocksInRow
-BlocksEndOfRow:         ;now 'blockrow' is filled with all block data on that row
-    INY
-    TYA
-    STA counter         ;Hang on to Y value for next row.
-    LDY #$00
-    LDX #$00
-FillBuffer: ;y - blockrow index, x - buffer index (essentially x location)
-    ;16 iterations of +2. On each one we will write the 2x2 metatile
-    TXA
-    ASL
-    ASL
-    ASL
-    ASL             ;push the '8' bit into the carry bit
-    BCS checkB
-checkA:
-    LDA blockrow, y ;What is first piece of block data
-    LSR
-    LSR
-    LSR
-    LSR             ;put X value in low 4 bits - works
-    STA checkvar
-    BCS CheckVineA
-CheckBlockA:
-    TXA             ;X is current iteration through the buffer, by twos (so that each metatile is placed two positions apart)
-    LSR             ;So to check against the "meta" x position, we should shift right.
-    CMP checkvar
-    BNE BuffCanvasA
-    JMP BuffBlockA
-CheckVineA:
-    TXA             ;X is current iteration through the buffer, by twos (so that each metatile is placed two positions apart)
-    LSR             ;So to check against the "meta" x position, we should shift right.
-    CMP checkvar
-    BNE BuffCanvasA
-    JMP BuffVineA
-checkB:
-    LDA blockrow, y ;What is first piece of block data
-    LSR
-    LSR
-    LSR
-    LSR             ;put X value in low 4 bits - works
-    STA checkvar
-    BCS CheckVineB
-CheckBlockB:
-    TXA             ;X is current iteration through the buffer, by twos (so that each metatile is placed two positions apart)
-    LSR             ;So to check against the "meta" x position, we should shift right.
-    CMP checkvar
-    BNE JumpToBuffCanvasB
-    JMP BuffBlockB
-CheckVineB:
-    TXA             ;X is current iteration through the buffer, by twos (so that each metatile is placed two positions apart)
-    LSR             ;So to check against the "meta" x position, we should shift right.
-    CMP checkvar
-    BNE JumpToBuffCanvasB
-    JMP BuffVineB
-JumpToBuffCanvasB:
-    JMP BuffCanvasB
-BuffBlockA:          ;Put entire metatile into first 32 byte buffer
-    LDA #$00         ;top left CHR address
-    STA tilebufferA, x
-    INX
-    LDA #$01         ;top right
-    STA tilebufferA, x
-    TXA
-    CLC
-    ADC #$10
-    TAX
-    LDA #$11         ;bottom right
-    STA tilebufferA, x
-    DEX
-    LDA #$10        ;bottom left
-    STA tilebufferA, x
-    TXA
-    SEC
-    SBC #$10        ;reset x to starting value
-    TAX
-    INX             ;increment x for next loop
-    INX
-    CPX #$20
-    BEQ JumpToWrite
-    INY             ;Incrememnt y because we drew a block
-    JMP FillBuffer
-JumpToWrite:
-    JMP WriteBuffer
-BuffCanvasA:    ;TODO: use a metatile struct and preload it before calling the buff routine so that it's only written once
-    LDA #$02         ;top left CHR address
-    STA tilebufferA, x
-    INX
-    LDA #$03         ;top right
-    STA tilebufferA, x
-    TXA
-    CLC
-    ADC #$10
-    TAX
-    LDA #$13         ;bottom right
-    STA tilebufferA, x
-    DEX
-    LDA #$12        ;bottom left
-    STA tilebufferA, x
-    TXA
-    SEC
-    SBC #$10        ;reset x to starting value
-    TAX
-    INX             ;increment x twice for next loop
-    INX
-    CPX #$20
-    BEQ JumpToWriteB
-    JMP FillBuffer
-JumpToWriteB:
-    JMP WriteBuffer
-BuffVineA:
-    LDA #$04         ;top left CHR address
-    STA tilebufferA, x
-    INX
-    LDA #$05         ;top right
-    STA tilebufferA, x
-    TXA
-    CLC
-    ADC #$10
-    TAX
-    LDA #$15         ;bottom right
-    STA tilebufferA, x
-    DEX
-    LDA #$14        ;bottom left
-    STA tilebufferA, x
-    TXA
-    SEC
-    SBC #$10        ;reset x to starting value
-    TAX
-    INX             ;increment x twice for next loop
-    INX
-    CPX #$20
-    BEQ WriteBuffer
-    INY
-    JMP FillBuffer
-BuffBlockB:          ;Put entire metatile into second 32 byte buffer
-    TXA             
-    PHA
-    SEC
-    SBC #$10        ;store iterative X then subtract 16 from X to get a new iterator for second buffer. Grab og X from stack when done.
-    TAX
-    LDA #$00         ;top left CHR address
-    STA tilebufferB, x
-    INX
-    LDA #$01         ;top right
-    STA tilebufferB, x
-    TXA
-    CLC
-    ADC #$10
-    TAX
-    LDA #$11         ;bottom right
-    STA tilebufferB, x
-    DEX
-    LDA #$10        ;bottom left
-    STA tilebufferB, x
-    PLA
-    TAX
-    INX             ;increment x for next loop
-    INX
-    CPX #$20
-    BEQ WriteBuffer
-    INY             ;Incrememnt y because we drew a block
-    JMP FillBuffer
-BuffCanvasB:
-    TXA             
-    PHA
-    SEC
-    SBC #$10        ;store iterative X then subtract 16 from X to get a new iterator for second buffer. Grab og X from stack when done.
-    TAX
-    LDA #$02         ;top left CHR address
-    STA tilebufferB, x
-    INX
-    LDA #$03         ;top right
-    STA tilebufferB, x
-    TXA
-    CLC
-    ADC #$10
-    TAX
-    LDA #$13         ;bottom right
-    STA tilebufferB, x
-    DEX
-    LDA #$12        ;bottom left
-    STA tilebufferB, x
-    ;TXA
-    ;SEC
-    ;SBC #$10        ;reset x to starting value
-    PLA
-    TAX
-    INX             ;increment x twice for next loop
-    INX
-    CPX #$20
-    BEQ WriteBuffer
-    JMP FillBuffer
-BuffVineB:
-    TXA             
-    PHA
-    SEC
-    SBC #$10        ;store iterative X then subtract 16 from X to get a new iterator for second buffer. Grab og X from stack when done.
-    TAX
-    LDA #$04         ;top left CHR address
-    STA tilebufferB, x
-    INX
-    LDA #$05         ;top right
-    STA tilebufferB, x
-    TXA
-    CLC
-    ADC #$10
-    TAX
-    LDA #$15         ;bottom right
-    STA tilebufferB, x
-    DEX
-    LDA #$14        ;bottom left
-    STA tilebufferB, x
-    PLA
-    TAX
-    INX             ;increment x for next loop
-    INX
-    CPX #$20
-    BEQ WriteBuffer
-    INY             ;Incrememnt y because we drew a block
-    JMP FillBuffer
-WriteBuffer:
-IteratorCleanup:
-    LDY #$00
-    LDX #$00
-WriteLoopA:
-    LDA tilebufferA, y
-    STA $2007       ;The money line!
-    INY
-    CPY #$10
-    BNE WriteLoopA
-    LDY #$00
-WriteLoopB:
-    LDA tilebufferB, y
-    STA $2007       ;The money line!
-    INY
-    CPY #$10
-    BNE WriteLoopB
-WriteLoopC:
-    LDA tilebufferA, y ;should start pulling from tilebufferA + #$10 (16) for second row
-    STA $2007       ;The money line!
-    INY
-    CPY #$20
-    BNE WriteLoopC
-    LDY #$10
-WriteLoopD:
-    LDA tilebufferB, y
-    STA $2007       ;The money line!
-    INY
-    CPY #$20
-    BNE WriteLoopD
-    PLA
-    TAX
-    INX
-    CPX #$0F
-    BEQ FinishedBGWrite
-FinishedBuffer:
-    TXA
-    PHA
-    LDY counter
-    JMP ClearBlockRow
-FinishedBGWrite:
 
 
-
-FILLATTRIBUTE0:
-    LDA $2002       ;reset latch
-    LDA #$23        ;High byte of $23CO address (attributes)
-    STA $2006
-    LDA #$C0        ;Low byte
-    STA $2006
-    LDX #$40        ;Fill with 64 bytes
-    LDA #$00        ;Attribute value
-FillAttribute0Loop:
-    STA $2007
-    DEX
-    BNE FillAttribute0Loop
-LoadCollMap:
-    LDA #<COLLMAP0   ;high byte
-    STA ptr+0
-    LDA #>COLLMAP0   ;low byte
-    STA ptr+1
-    LDY #$00
-    LDX #$00
-WriteCMLoop:
-    LDA (ptr), y
-    STA COLLMAPBANK, x
-    INY
-    INX
-    CPY #$3C    ;60 bytes in COLLMAP0
-    BNE WriteCMLoop
-
-
+    JSR LoadStaticScreen
 
     JSR WAITFORVBLANK
 
@@ -722,8 +408,9 @@ checkup:
     ORA #%00010000      ;set to climbing
     STA playerdata+Entity::state
     DEC playerdata+Entity::ypos
+    INC animaframes
 ;JumpToDone:
-    ;JMP donecheckingdirectional ;jump past check down so not getting both simultaneous
+    JMP donecheckingdirectional ;jump past check down so not getting both simultaneous
 
 checkdown:
     LDA controller
@@ -735,6 +422,7 @@ checkdown:
     LDA playerdata+Entity::state
     ORA #%00010000      ;set to climbing
     INC playerdata+Entity::ypos
+    INC animaframes
 ;JumpToDone:
     ;JMP donecheckingdirectional ;jump past check down so not getting both simultaneous
 
@@ -798,10 +486,37 @@ LoadState:
     BNE CheckWalkState  ;if not, jump out
     LDA playerdata+Entity::env
     CMP #$01
-    BEQ CheckWalkState  ;if still on a climbable, jump out
+    BEQ SetClimbing  ;if still on a climbable, jump out
     TXA
     AND #%11101111      ;turn off climbing
     STA playerdata+Entity::state
+SetClimbing:
+    LDA #$08
+    STA playerdata+Entity::tlspr
+    LDA #$09
+    STA playerdata+Entity::trspr
+    LDA #$18
+    STA playerdata+Entity::blspr
+    LDA #$19
+    STA playerdata+Entity::brspr
+    LDA animaframes
+    LSR
+    LSR
+    LSR
+    LSR
+    BCS SetClimbingTwo
+SetClimbingOne:
+    LDA playerdata+Entity::state
+    ORA #%10000000
+    AND #%10111111
+    STA playerdata+Entity::state
+    JMP CheckFalling
+SetClimbingTwo:
+    LDA playerdata+Entity::state
+    ORA #%01000000
+    AND #%01111111
+    STA playerdata+Entity::state
+    JMP CheckFalling
 ;check walk state
 CheckWalkState:
     LDA playerdata+Entity::state
@@ -1380,6 +1095,365 @@ WriteEntityFromBuffer: ;can this loop with y?   Call this is a subroutine to upd
 ReturnFromStoreEntity:
     RTS
 
+;-------------------Load Screen Subroutines----------------------------------------------------------
+;Background Draw methods
+;If game is in play state, run LoadStaticScreen
+;If game is in transition state, run LoadScreenTransition.
+;Upon game state changing to transition, we need to fill both nametables in $2007 then scroll between them. We'll receive the BLOCKTABLE
+;COLLMAP for the new screen and hold them in a pointer somewhere, or a reference variable for a pointer. Then LoadTransition can fill both
+;nametables in PPU memory and increment the correct scroll, h or v (First I'm only messing around with v). The idea is to get a Zelda-like
+;screen transition.
+
+LoadStaticScreen:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+;Background filling routine begins
+;This section will get subbed out for metatile implementation
+;For simplicity, I'm gonna only use one palette for the BG
+
+;Begin with canvas tile fill
+;Ok, can't do that because of the write order, unless maybe I build an array in RAM then store it.
+;I need a way to check against the block table for each location.
+
+;Instead of filling the whole nametable at once, I'm going to try writing to a buffer. We'll have a toggle as to whether
+;it's writing the top side or bottom side of the row. This may go slow, but let's see if it works first. If it all fits b/t v-blank, then
+;great, though if I find performance issues later, optimizing here should be my first move.
+    ;LDA #<BLOCKTABLE0   ;high byte
+    ;STA ptr+0
+    ;LDA #>BLOCKTABLE0   ;low byte
+    ;STA ptr+1
+    LDA #$00
+    STA counter
+    LDX #$00        ;outside counter goes to 15
+    LDY #$00     
+    TXA             ;$2007 write counter push to stack
+    PHA             
+ClearBlockRow:
+    TYA
+    PHA
+    LDA #$00
+    LDY #$00
+    LDX #$00
+ClearLoop:
+    STA blockrow, y
+    INY
+    CPY #$10
+    BNE ClearLoop
+    PLA
+    TAY
+GetBlocksInRow:
+    LDA (level+Area::selfaddr1), y
+    CMP #$FF
+    BEQ BlocksEndOfRow
+    STA blockrow, x      ;Ok, I'm using y as the pointer index, but I can't use it as the blockrow index too, it's offset
+    INX
+    INY
+    CPY #$FF       ;turns out it did happen lmao. Of course it did. If I make a check, it needs to be against $FF, assuming a level could be all blocks
+    BEQ BlocksEndOfRow ;this should never happen, but if we are iterating past 16, let's call it quits. Optimization, remove this
+    ;INC ptr+1           ;next address in BLOCKTABLE (Maybe needed if BLOCKTABLE is bigger than 256)
+    JMP GetBlocksInRow
+BlocksEndOfRow:         ;now 'blockrow' is filled with all block data on that row
+    INY
+    TYA
+    STA counter         ;Hang on to Y value for next row.
+    LDY #$00
+    LDX #$00
+FillBuffer: ;y - blockrow index, x - buffer index (essentially x location)
+    ;16 iterations of +2. On each one we will write the 2x2 metatile
+    TXA
+    ASL
+    ASL
+    ASL
+    ASL             ;push the '8' bit into the carry bit
+    BCS checkB
+checkA:
+    LDA blockrow, y ;What is first piece of block data
+    LSR
+    LSR
+    LSR
+    LSR             ;put X value in low 4 bits - works
+    STA checkvar
+    BCS CheckVineA
+CheckBlockA:
+    TXA             ;X is current iteration through the buffer, by twos (so that each metatile is placed two positions apart)
+    LSR             ;So to check against the "meta" x position, we should shift right.
+    CMP checkvar
+    BNE BuffCanvasA
+    JMP BuffBlockA
+CheckVineA:
+    TXA             ;X is current iteration through the buffer, by twos (so that each metatile is placed two positions apart)
+    LSR             ;So to check against the "meta" x position, we should shift right.
+    CMP checkvar
+    BNE BuffCanvasA
+    JMP BuffVineA
+checkB:
+    LDA blockrow, y ;What is first piece of block data
+    LSR
+    LSR
+    LSR
+    LSR             ;put X value in low 4 bits - works
+    STA checkvar
+    BCS CheckVineB
+CheckBlockB:
+    TXA             ;X is current iteration through the buffer, by twos (so that each metatile is placed two positions apart)
+    LSR             ;So to check against the "meta" x position, we should shift right.
+    CMP checkvar
+    BNE JumpToBuffCanvasB
+    JMP BuffBlockB
+CheckVineB:
+    TXA             ;X is current iteration through the buffer, by twos (so that each metatile is placed two positions apart)
+    LSR             ;So to check against the "meta" x position, we should shift right.
+    CMP checkvar
+    BNE JumpToBuffCanvasB
+    JMP BuffVineB
+JumpToBuffCanvasB:
+    JMP BuffCanvasB
+BuffBlockA:          ;Put entire metatile into first 32 byte buffer
+    LDA #$00         ;top left CHR address
+    STA tilebufferA, x
+    INX
+    LDA #$01         ;top right
+    STA tilebufferA, x
+    TXA
+    CLC
+    ADC #$10
+    TAX
+    LDA #$11         ;bottom right
+    STA tilebufferA, x
+    DEX
+    LDA #$10        ;bottom left
+    STA tilebufferA, x
+    TXA
+    SEC
+    SBC #$10        ;reset x to starting value
+    TAX
+    INX             ;increment x for next loop
+    INX
+    CPX #$20
+    BEQ JumpToWrite
+    INY             ;Incrememnt y because we drew a block
+    JMP FillBuffer
+JumpToWrite:
+    JMP WriteBuffer
+BuffCanvasA:    ;TODO: use a metatile struct and preload it before calling the buff routine so that it's only written once
+    LDA #$02         ;top left CHR address
+    STA tilebufferA, x
+    INX
+    LDA #$03         ;top right
+    STA tilebufferA, x
+    TXA
+    CLC
+    ADC #$10
+    TAX
+    LDA #$13         ;bottom right
+    STA tilebufferA, x
+    DEX
+    LDA #$12        ;bottom left
+    STA tilebufferA, x
+    TXA
+    SEC
+    SBC #$10        ;reset x to starting value
+    TAX
+    INX             ;increment x twice for next loop
+    INX
+    CPX #$20
+    BEQ JumpToWriteB
+    JMP FillBuffer
+JumpToWriteB:
+    JMP WriteBuffer
+BuffVineA:
+    LDA #$04         ;top left CHR address
+    STA tilebufferA, x
+    INX
+    LDA #$05         ;top right
+    STA tilebufferA, x
+    TXA
+    CLC
+    ADC #$10
+    TAX
+    LDA #$15         ;bottom right
+    STA tilebufferA, x
+    DEX
+    LDA #$14        ;bottom left
+    STA tilebufferA, x
+    TXA
+    SEC
+    SBC #$10        ;reset x to starting value
+    TAX
+    INX             ;increment x twice for next loop
+    INX
+    CPX #$20
+    BEQ WriteBuffer
+    INY
+    JMP FillBuffer
+BuffBlockB:          ;Put entire metatile into second 32 byte buffer
+    TXA             
+    PHA
+    SEC
+    SBC #$10        ;store iterative X then subtract 16 from X to get a new iterator for second buffer. Grab og X from stack when done.
+    TAX
+    LDA #$00         ;top left CHR address
+    STA tilebufferB, x
+    INX
+    LDA #$01         ;top right
+    STA tilebufferB, x
+    TXA
+    CLC
+    ADC #$10
+    TAX
+    LDA #$11         ;bottom right
+    STA tilebufferB, x
+    DEX
+    LDA #$10        ;bottom left
+    STA tilebufferB, x
+    PLA
+    TAX
+    INX             ;increment x for next loop
+    INX
+    CPX #$20
+    BEQ WriteBuffer
+    INY             ;Incrememnt y because we drew a block
+    JMP FillBuffer
+BuffCanvasB:
+    TXA             
+    PHA
+    SEC
+    SBC #$10        ;store iterative X then subtract 16 from X to get a new iterator for second buffer. Grab og X from stack when done.
+    TAX
+    LDA #$02         ;top left CHR address
+    STA tilebufferB, x
+    INX
+    LDA #$03         ;top right
+    STA tilebufferB, x
+    TXA
+    CLC
+    ADC #$10
+    TAX
+    LDA #$13         ;bottom right
+    STA tilebufferB, x
+    DEX
+    LDA #$12        ;bottom left
+    STA tilebufferB, x
+    ;TXA
+    ;SEC
+    ;SBC #$10        ;reset x to starting value
+    PLA
+    TAX
+    INX             ;increment x twice for next loop
+    INX
+    CPX #$20
+    BEQ WriteBuffer
+    JMP FillBuffer
+BuffVineB:
+    TXA             
+    PHA
+    SEC
+    SBC #$10        ;store iterative X then subtract 16 from X to get a new iterator for second buffer. Grab og X from stack when done.
+    TAX
+    LDA #$04         ;top left CHR address
+    STA tilebufferB, x
+    INX
+    LDA #$05         ;top right
+    STA tilebufferB, x
+    TXA
+    CLC
+    ADC #$10
+    TAX
+    LDA #$15         ;bottom right
+    STA tilebufferB, x
+    DEX
+    LDA #$14        ;bottom left
+    STA tilebufferB, x
+    PLA
+    TAX
+    INX             ;increment x for next loop
+    INX
+    CPX #$20
+    BEQ WriteBuffer
+    INY             ;Incrememnt y because we drew a block
+    JMP FillBuffer
+WriteBuffer:
+IteratorCleanup:
+    LDY #$00
+    LDX #$00
+WriteLoopA:
+    LDA tilebufferA, y
+    STA $2007       ;The money line!
+    INY
+    CPY #$10
+    BNE WriteLoopA
+    LDY #$00
+WriteLoopB:
+    LDA tilebufferB, y
+    STA $2007       ;The money line!
+    INY
+    CPY #$10
+    BNE WriteLoopB
+WriteLoopC:
+    LDA tilebufferA, y ;should start pulling from tilebufferA + #$10 (16) for second row
+    STA $2007       ;The money line!
+    INY
+    CPY #$20
+    BNE WriteLoopC
+    LDY #$10
+WriteLoopD:
+    LDA tilebufferB, y
+    STA $2007       ;The money line!
+    INY
+    CPY #$20
+    BNE WriteLoopD
+    PLA
+    TAX
+    INX
+    CPX #$0F
+    BEQ FinishedBGWrite
+FinishedBuffer:
+    TXA
+    PHA
+    LDY counter
+    JMP ClearBlockRow
+FinishedBGWrite:
+
+
+
+FILLATTRIBUTE0:
+    LDA $2002       ;reset latch
+    LDA #$23        ;High byte of $23CO address (attributes)
+    STA $2006
+    LDA #$C0        ;Low byte
+    STA $2006
+    LDX #$40        ;Fill with 64 bytes
+    LDA #$00        ;Attribute value
+FillAttribute0Loop:
+    STA $2007
+    DEX
+    BNE FillAttribute0Loop
+LoadCollMap:
+    LDA #<COLLMAP0   ;high byte
+    STA ptr+0
+    LDA #>COLLMAP0   ;low byte
+    STA ptr+1
+    LDY #$00
+    LDX #$00
+WriteCMLoop:
+    LDA (ptr), y
+    STA COLLMAPBANK, x
+    INY
+    INX
+    CPY #$3C    ;60 bytes in COLLMAP0
+    BNE WriteCMLoop
+
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    NMI / VBLANK    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 VBLANK:
     PHA ;push registers - A, P, X, Y
@@ -1633,7 +1707,7 @@ donewithppu:
 PALETTE:  ;seems like background can only access last 4 palettes?
     ;sprite palettes     
     .byte $0E, $17, $1C, $37 ;palette 3  ;browns and blue - main char
-    .byte $0E, $1C, $2B, $39 ;palette 2  ;pastel green, blue-green, blue  map grabs this
+    .byte $0E, $1C, $2B, $39 ;palette 2  ;pastel green, blue-green, blue
     .byte $0A, $05, $26, $30 ;palette 3  ;green, crimson, pink, white
     .byte $0E, $13, $23, $33 ;palette 4   ;purples 
 
@@ -1645,6 +1719,18 @@ PALETTE:  ;seems like background can only access last 4 palettes?
     
     ;TODO: potential for compressing again by half:
     ;If I have a row-ender, I don't need a Y value, so II can pack two blocks into one byte: X1{0000}X2{0000}
+
+AREA0:  ;How to traverse these memory chunks. Start with a little "table of contents"? A few bytes to load as an adder to each segment?
+SELFID0:
+    .byte $00
+EXITS0:          ;$FF is no exit
+    .byte $FF   ;up
+    .byte $01   ;down
+    .byte $FF   ;left
+    .byte $FF   ;right
+CONTENTS0:
+    .byte $07   ;offset to blocktable
+    .byte $64   ;offset to collmap
 BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all they need is position X{0000} Y{0000}
     .byte $00, $10,           $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
     .byte $00,                                                                       $F0, $FF
@@ -1660,9 +1746,8 @@ BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all
     .byte $00,                                                        $C8,           $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
-
-;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
+    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
+;100 offset (100?)
 COLLMAP0: ;will reduce to 60 bytes
     .byte %01010000, %01010101, %01010101, %01010101
     .byte %01000000, %00000000, %00000000, %00000001
@@ -1678,7 +1763,54 @@ COLLMAP0: ;will reduce to 60 bytes
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01010101, %01010101, %01010101, %10010101
+
+AREA1:
+SELFID1:
+    .byte $01
+EXITS1:
+    .byte $00   ;up
+    .byte $FF   ;down
+    .byte $FF   ;left
+    .byte $FF   ;right
+CONTENTS1:
+    .byte $07   ;offset to blocktable (maybe unecessary if nothing is variable length before the block table)
+    .byte $54   ;offset to collmap
+BLOCKTABLE1:
+    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF                              
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
+;+84 to collmap
+;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
+COLLMAP1:
+    .byte %01010000, %01010101, %01010101, %10010101
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
     .byte %01010101, %01010101, %01010101, %01010101
+
 
 .segment "VECTORS"
     .word VBLANK
