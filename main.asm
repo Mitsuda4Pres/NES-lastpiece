@@ -720,6 +720,7 @@ checkup:
     BNE donecheckingdirectional
     LDA playerdata+Entity::state
     ORA #%00010000      ;set to climbing
+    STA playerdata+Entity::state
     DEC playerdata+Entity::ypos
 ;JumpToDone:
     ;JMP donecheckingdirectional ;jump past check down so not getting both simultaneous
@@ -789,7 +790,20 @@ FindMetaPosition:
     LSR
     STA playerdata+Entity::metay
 LoadState:
+;check climbing state
+    LDA playerdata+Entity::state
+    TAX
+    AND #%00010000    ;check if climbing
+    CMP #%00010000
+    BNE CheckWalkState  ;if not, jump out
+    LDA playerdata+Entity::env
+    CMP #$01
+    BEQ CheckWalkState  ;if still on a climbable, jump out
+    TXA
+    AND #%11101111      ;turn off climbing
+    STA playerdata+Entity::state
 ;check walk state
+CheckWalkState:
     LDA playerdata+Entity::state
     AND #%00000010
     CMP #$02
@@ -822,8 +836,9 @@ SetWalkTwo:
 
 ;check fall state
 CheckFalling:
-    LDA playerdata+Entity::env
-    CMP #$01    ;is player climbing?
+    LDA playerdata+Entity::state
+    AND #%00010000
+    CMP #$10    ;is player climbing?
     BEQ EndProcessPlayer
     LDA playerdata+Entity::state
     AND #%00100000
@@ -894,10 +909,10 @@ CheckPlayerCollisionDown: ;IN <--- direction of check (Y)
     ;I still want to try this with a check one pixel in from the edge. can I use the stack for my vars?
     LDA playerdata+Entity::xpos
     CLC
-    ADC #$01    ;one pixel in from left edge - x1
+    ADC #$02    ;one pixel in from left edge - x1
     TAX         ;store in X reg
     CLC
-    ADC #$0E    ;plus 14 more to get one pixel in from right edge - x2
+    ADC #$0C    ;plus 14 more to get one pixel in from right edge - x2
     TAY         ;store on Y
     LDA playerdata+Entity::ypos
     CLC
