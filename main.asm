@@ -30,9 +30,10 @@ JOYPAD1         = $4016
 JOYPAD2         = $4017
 
 ;;;Custom registers/maps
-WORLD           = $0440
+AREABANK        = $0440     ;192 bytes for 96 areas. Do not exceed or you will bleed into $0500!
 COLLMAPBANK     = $0500    ;one page is 256 bytes. Is this enough or do I bleed into 0600?
 ENTITIES        = $0600
+
 ;If I do a 2 bit coll map, each tile can have 4 properties: "not there", "solid", "climbable", "damaging"
 .scope EntityType
     NoEntity = 0
@@ -41,7 +42,7 @@ ENTITIES        = $0600
     Enemy = 3
 .endscope
 
-.struct Entity      ;15b
+.struct Entity          ;15b
     type        .byte
     xpos        .byte
     ypos        .byte
@@ -64,7 +65,7 @@ ENTITIES        = $0600
     metay       .byte
 .endstruct
 
-.struct Metatile
+.struct Metatile        ;11b
     ypos        .byte       
     spritetl    .byte
     spritetr    .byte      
@@ -78,16 +79,18 @@ ENTITIES        = $0600
     state       .byte
 .endstruct
 
-.struct Area
+.struct Area            ;6b
     selfaddr1   .byte
     selfaddr2   .byte
-    btoffset    .byte
-    cmoffset    .byte
+    btaddr1     .byte
+    btaddr2     .byte
+    cmaddr1     .byte
+    cmaddr2     .byte
 .endstruct
 
 .segment "STARTUP"
 
-;I had to open of the zero page in nes.cfg to range from $0002 to $00FF. Idk if that will break something later.
+;I had to open up the zero page in nes.cfg to range from $0002 to $00FF. Idk if that will break something later.
 .segment "ZEROPAGE"
 gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - cutscene, $05 - screen transition
 controller:         .res 1    ;reserve 1 byte for controller input
@@ -106,14 +109,18 @@ colltemp3:          .res 1
 animaframes:        .res 1
 totalsprites:       .res 1
 playerdata:         .res .sizeof(Entity)            ;15b
-metatile:           .res .sizeof(Metatile)          ;10b
-entitybuffer:       .res .sizeof(Entity)            ;12b
+metatile:           .res .sizeof(Metatile)          ;11b
+entitybuffer:       .res .sizeof(Entity)            ;15b
 blockrow:           .res 16
 spritemem:          .res 2
-level:              .res .sizeof(Area)              ;5b
-nextareaptr:        .res 2
-ptr:                .res 2
-;total zero page reserved: 143b
+level:              .res .sizeof(Area)              ;6b
+nextarea:           .res .sizeof(Area)
+nextareaid:         .res 1
+btptr:              .res 2
+cmptr:              .res 2
+exitdir:            .res 1      ;1- up, 2 - down, 3 - left, 4 - right
+;ptr:                .res 2
+;total zero page reserved: 157b (max 254)
 
 .segment "CODE"
 
@@ -156,16 +163,45 @@ CLEARMEM:
 
     LDX #$00
     LDY #$00
-InitializeFirstScreen:
+WriteAreaBankLoop:      ;Write all areas PRGROM addresses into RAM lookup table
+                        ;Future optimization: if I keep a self-size byte in the AREA arrays, I can loop this and not hardcode.
     LDA #<AREA0
-    STA level+Area::selfaddr1
+    STA AREABANK, x
+    INX
     LDA #>AREA0
+    STA AREABANK, x
+    INX
+    LDA #<AREA1
+    STA AREABANK, x
+    INX
+    LDA #>AREA1
+    STA AREABANK, x
+    
+    LDX #$00
+InitializeFirstScreen:
+    LDA AREABANK
+    STA level+Area::selfaddr1
+    LDA AREABANK+1
     STA level+Area::selfaddr2
+    ;block table
     LDA level+Area::selfaddr1 ;if not 2, try 1
     CLC
     ADC #$07
-    STA level+Area::selfaddr1
+    STA level+Area::btaddr1
     LDA level+Area::selfaddr2
+    STA level+Area::btaddr2
+    ;collision map
+    LDA level+Area::selfaddr1
+    CLC
+    ADC #$64 ;#$64
+    STA level+Area::cmaddr1
+    LDA level+Area::selfaddr2
+    STA level+Area::cmaddr2
+    BCS IncrementCMHighByte
+    JMP ContinueToInitPlayer
+IncrementCMHighByte:
+    INC level+Area::cmaddr2
+ContinueToInitPlayer:
     LDX #$00
 InitializePlayer:
     LDA #EntityType::PlayerType
@@ -294,8 +330,17 @@ PALETTELOAD:
     LDA #$00
     STA $2006           ;PPUADDR
 
-
-    JSR LoadStaticScreen
+    LDA level+Area::btaddr1
+    STA btptr
+    LDA level+Area::btaddr2
+    STA btptr+1
+    LDA level+Area::cmaddr1
+    STA cmptr
+    LDA level+Area::cmaddr2
+    STA cmptr+1
+    JSR LoadNametable
+    JSR LoadAttributes
+    JSR LoadCollMap
 
     JSR WAITFORVBLANK
 
@@ -450,17 +495,17 @@ checkarelease:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 finishcontrols:
 processcrolling:
-    LDA scrolly
-    SEC
-    SBC #$02
-    STA scrolly
-    CMP #$00
-    BNE donescroll
-    LDA #$EE
-    STA scrolly
-    LDA swap
-    EOR #$02
-    STA swap
+    ;LDA scrolly
+    ;SEC
+    ;SBC #$02
+    ;STA scrolly
+    ;CMP #$00
+    ;BNE donescroll
+    ;LDA #$EE
+    ;STA scrolly
+    ;LDA swap
+    ;EOR #$02
+    ;STA swap
 donescroll:
 
 processplayer:
@@ -472,6 +517,7 @@ FindMetaPosition:
     LSR
     STA playerdata+Entity::metax
     LDA playerdata+Entity::ypos
+FinishSetMetaY:
     LSR
     LSR
     LSR
@@ -597,14 +643,17 @@ CopyPDtoEBLoop:
     LDX #$01    ;X = ENTITIES index of player + 1
     LDA #$01
     STA checkvar    ;set checkvar to 1 so subroutine does not mess with stack
-    JSR WriteEntityFromBuffer ;
-
-
-    ;check for collisions from new position
+    JSR WriteEntityFromBuffer ;Subroutine to write all the changes made to player this frame
+CheckCollisions:;check for collisions from new position
     JSR CheckPlayerCollisionDown    ;check downward collision every frame
     JSR CheckPlayerCollisionLeft
     JSR CheckPlayerCollisionRight
     JSR CheckPlayerCollisionOver
+CheckForScreenTransition:       ;After player is written, see if game has entered "transition" state to move to next area
+    LDA gamestate
+    CMP #$05
+    BNE waitfordrawtocomplete
+    JMP SCREENTRANLOOP   ;waitfordrawtocompleteST   ;do I need to do jump to a specific part of the loop?
 waitfordrawtocomplete:
     LDA drawcomplete
     CMP #$01
@@ -613,6 +662,68 @@ waitfordrawtocomplete:
     STA drawcomplete
 
     JMP GAMELOOP
+
+
+;When switching screens, get out of game loop entirely and use SCREENTRANLOOP
+;Both PPU nametables should be loaded up by using the TransitionScreen BG loading subroutine
+SCREENTRANLOOP:
+InitSpritesST:
+    LDY #$00
+    LDA #$FF
+InitSpriteLoopST:
+    STA (spritemem), y
+    INY
+    EOR #$FF
+    STA (spritemem), y
+    INY
+    STA (spritemem), y
+    INY
+    EOR #$FF
+    STA (spritemem), y
+    INY
+    BEQ ContinueTransition
+    JMP InitSpriteLoopST
+ContinueTransition:
+    LDA exitdir
+    CMP #$02
+    BNE waitfordrawtocompleteST     ;change as more directions added ofc
+TransitionDown: ;downward exit means screen scrolls up, scrolly will decrement
+    INC scrolly
+    INC scrolly ;where the magic happens
+    DEC playerdata+Entity::ypos
+    DEC playerdata+Entity::ypos
+    LDX #$00
+CopyPDtoEBLoopST:
+    LDA playerdata, x
+    STA entitybuffer, x
+    INX
+    INY
+    CPY #$0F    ;15 items in entity struct
+    BNE CopyPDtoEBLoopST
+    LDX #$01    ;X = ENTITIES index of player + 1
+    LDA #$01
+    STA checkvar    ;set checkvar to 1 so subroutine does not mess with stack
+    JSR WriteEntityFromBuffer ;Subroutine to write all the changes made to player this frame
+
+    LDA scrolly
+    CMP #$FE
+    BNE waitfordrawtocompleteST
+ResetScrollY:
+    LDA #$00
+    STA scrolly
+    LDA #$01                    ;set gamestate to main game
+    STA gamestate
+    JMP waitfordrawtocomplete   ;back to main GAMELOOP
+waitfordrawtocompleteST:
+    LDA drawcomplete
+    CMP #$01
+    BNE waitfordrawtocompleteST
+    LDA #$00
+    STA drawcomplete
+
+    JMP SCREENTRANLOOP
+
+
 
 ;;;;; ----- Logical subroutines ------ ;;;;;;
 CheckPlayerCollisionDown: ;IN <--- direction of check (Y)
@@ -632,6 +743,8 @@ CheckPlayerCollisionDown: ;IN <--- direction of check (Y)
     LDA playerdata+Entity::ypos
     CLC
     ADC #$10    ;y pos of player's bottom edge (feet) - y
+    CMP #$FD    ;Bottom of screen?
+    BEQ ExitDown
     LSR         ;divide by 16
     LSR         ;meta y of player's feet
     LSR
@@ -684,8 +797,44 @@ ContinueTest:
     CMP #$02
     BEQ MaskOutTwo
     CMP #$03
-    BNE ReturnFromCollisionDown ;may be to far to branch
-    JMP MaskOutThree
+    BEQ MaskOutThree ;may be to far to branch
+    JMP ReturnFromCollisionDown
+ExitDown:
+    LDA #$05        ;screen transition game state
+    STA gamestate
+    LDA #$02
+    STA exitdir
+    LDY #$02        ;offset to "down" exit id
+    LDA (level+Area::selfaddr1), y  ;exit id is the selfid of the next area, which should also be the offset into the AREABANK array
+    STA nextareaid  ;get id of next area 
+    JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
+
+FillNametables:
+    LDA level+Area::btaddr1
+    STA btptr
+    LDA level+Area::btaddr2
+    STA btptr+1
+    JSR LoadNametable
+    LDA nextarea+Area::btaddr1
+    STA btptr
+    LDA nextarea+Area::btaddr2
+    STA btptr+1
+    JSR LoadNametable
+FillAttributes:
+    JSR LoadAttributes
+    ;JSR FillAttributes ;currently not changing anything about the attributes
+FillCollMap:
+    ;LDA level+Area::cmaddr1
+    ;STA cmptr
+    ;LDA level+Area::cmaddr2
+    ;STA cmptr+1
+    ;JSR LoadCollMap
+    LDA nextarea+Area::cmaddr1
+    STA cmptr
+    LDA nextarea+Area::cmaddr2
+    STA cmptr+1
+    JSR LoadCollMap
+    JMP ReturnFromCollisionDown
 MaskOutZero:
     LDA colltemp1
     AND #%11000000
@@ -1095,16 +1244,75 @@ WriteEntityFromBuffer: ;can this loop with y?   Call this is a subroutine to upd
 ReturnFromStoreEntity:
     RTS
 
+
+
 ;-------------------Load Screen Subroutines----------------------------------------------------------
+
+SetupNextArea:
+    NOP
+    CLC
+    NOP
+    CLC
+    NOP
+
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+    LDX nextareaid
+    LDA AREABANK, x
+    STA nextarea+Area::selfaddr1
+    INX
+    LDA AREABANK, x
+    STA nextarea+Area::selfaddr2
+    LDY #$05                            ;First byte of "contents" section in AREA array. Contains offset of the block table
+    LDA (nextarea+Area::selfaddr1), y   ;get block table offset (probably $07)
+    STA nextarea+Area::btaddr1          ;use as variable for a moment
+    LDA nextarea+Area::selfaddr1
+    CLC
+    ADC nextarea+Area::btaddr1
+    STA nextarea+Area::btaddr1
+    ;TAY                                 ;put that value into X
+    ;LDA (nextarea+Area::selfaddr1), y     ;get the value of X added to lowbyte of the array address. Should be first byte in block table.
+    ;STA nextarea+Area::btaddr1
+    LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
+    STA nextarea+Area::btaddr2
+    BCS NAIncrementHighByteBT
+    JMP NAContinueToLoadCM
+NAIncrementHighByteBT:
+    INC nextarea+Area::btaddr2
+NAContinueToLoadCM:
+    LDY #$06
+    LDA (nextarea+Area::selfaddr1), y   ;get collmap offset, repeat process
+    STA nextarea+Area::cmaddr1          ;use as variable for a moment
+    LDA nextarea+Area::selfaddr1
+    CLC
+    ADC nextarea+Area::cmaddr1
+    STA nextarea+Area::cmaddr1
+    LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
+    STA nextarea+Area::cmaddr2
+    BCS NAIncrementHighByteCM
+    JMP NAReturn
+NAIncrementHighByteCM:
+    INC nextarea+Area::cmaddr2
+NAReturn:
+    ;Done. "nextarea" struct is populated.
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
 ;Background Draw methods
-;If game is in play state, run LoadStaticScreen
-;If game is in transition state, run LoadScreenTransition.
 ;Upon game state changing to transition, we need to fill both nametables in $2007 then scroll between them. We'll receive the BLOCKTABLE
 ;COLLMAP for the new screen and hold them in a pointer somewhere, or a reference variable for a pointer. Then LoadTransition can fill both
 ;nametables in PPU memory and increment the correct scroll, h or v (First I'm only messing around with v). The idea is to get a Zelda-like
 ;screen transition.
+;LoadNametable loads one name table (not both). Need to make a way to call for "level" then "nextarea" when transitioning screens
 
-LoadStaticScreen:
+LoadNametable:
     PHA
     TXA
     PHA
@@ -1145,7 +1353,7 @@ ClearLoop:
     PLA
     TAY
 GetBlocksInRow:
-    LDA (level+Area::selfaddr1), y
+    LDA (btptr), y
     CMP #$FF
     BEQ BlocksEndOfRow
     STA blockrow, x      ;Ok, I'm using y as the pointer index, but I can't use it as the blockrow index too, it's offset
@@ -1408,7 +1616,7 @@ WriteLoopD:
     PLA
     TAX
     INX
-    CPX #$0F
+    CPX #$0F       ;15 metarows
     BEQ FinishedBGWrite
 FinishedBuffer:
     TXA
@@ -1416,36 +1624,6 @@ FinishedBuffer:
     LDY counter
     JMP ClearBlockRow
 FinishedBGWrite:
-
-
-
-FILLATTRIBUTE0:
-    LDA $2002       ;reset latch
-    LDA #$23        ;High byte of $23CO address (attributes)
-    STA $2006
-    LDA #$C0        ;Low byte
-    STA $2006
-    LDX #$40        ;Fill with 64 bytes
-    LDA #$00        ;Attribute value
-FillAttribute0Loop:
-    STA $2007
-    DEX
-    BNE FillAttribute0Loop
-LoadCollMap:
-    LDA #<COLLMAP0   ;high byte
-    STA ptr+0
-    LDA #>COLLMAP0   ;low byte
-    STA ptr+1
-    LDY #$00
-    LDX #$00
-WriteCMLoop:
-    LDA (ptr), y
-    STA COLLMAPBANK, x
-    INY
-    INX
-    CPY #$3C    ;60 bytes in COLLMAP0
-    BNE WriteCMLoop
-
     PLA
     TAY
     PLA
@@ -1453,6 +1631,60 @@ WriteCMLoop:
     PLA
     RTS
 
+LoadAttributes:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    LDA $2002       ;reset latch
+    LDA #$23        ;High byte of $23CO address (attributes)
+    STA $2006
+    LDA #$C0        ;Low byte
+    STA $2006
+    LDX #$40        ;Fill with 64b
+    LDA #$00        ;Attribute value
+LoadAttributesLoop:
+    STA $2007
+    DEX
+    BNE LoadAttributesLoop
+ReturnFromLoadAttributes:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+
+LoadCollMap:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    ;LDA level+Area::cmaddr1   ;low byte
+    ;STA ptr+0
+    ;LDA level+Area::cmaddr2   ;high byte
+    ;STA ptr+1
+    LDY #$00
+    LDX #$00
+WriteCMLoop:
+    LDA (cmptr), y
+    STA COLLMAPBANK, x
+    INY
+    INX
+    CPY #$3C    ;60 bytes in COLLMAP0
+    BNE WriteCMLoop
+ReturnFromLoadCollMap:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    NMI / VBLANK    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 VBLANK:
@@ -1678,12 +1910,16 @@ DONESPRITE:
     STA $2006
     STA $2006   ;$2006 takes a double write PPUDATA
 
-    ;when ready for scrolling background
-    ;LDA scrollx
-    ;STA $2005
-    ;LDA scrolly
-    ;STA $2005
+    ;when ready for scrolling background, only if screen is transitioning
+    ;LDA gamestate
+    ;CMP #$05        ;conditional may be unneccesary if scrollx/scrolly don't change
+    ;BNE donewithppu
+    LDA scrollx
+    STA $2005
+    LDA scrolly
+    STA $2005
 
+SwapScreen:
     LDA #%10001000
     ORA swap
     LDX $2002   ;clear the register before
@@ -1725,7 +1961,7 @@ SELFID0:
     .byte $00
 EXITS0:          ;$FF is no exit
     .byte $FF   ;up
-    .byte $01   ;down
+    .byte $02   ;down   Exits have to be a multiple of 2
     .byte $FF   ;left
     .byte $FF   ;right
 CONTENTS0:
@@ -1767,7 +2003,7 @@ COLLMAP0: ;will reduce to 60 bytes
 
 AREA1:
 SELFID1:
-    .byte $01
+    .byte $02   ;RAM lookup table place number. By 2s for storing two-byte PRGROM addresses
 EXITS1:
     .byte $00   ;up
     .byte $FF   ;down
