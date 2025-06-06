@@ -494,6 +494,14 @@ checkarelease:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 finishcontrols:
+CheckForScreenTransition:       ;After player is written, see if game has entered "transition" state to move to next area
+    LDA gamestate
+    CMP #$05
+    BNE DoneCheckForScreenTransition
+    JSR LoadNextArea
+    JMP SCREENTRANLOOP   ;waitfordrawtocompleteST   ;do I need to do jump to a specific part of the loop?
+DoneCheckForScreenTransition:
+
 processcrolling:
     ;LDA scrolly
     ;SEC
@@ -649,11 +657,6 @@ CheckCollisions:;check for collisions from new position
     JSR CheckPlayerCollisionLeft
     JSR CheckPlayerCollisionRight
     JSR CheckPlayerCollisionOver
-CheckForScreenTransition:       ;After player is written, see if game has entered "transition" state to move to next area
-    LDA gamestate
-    CMP #$05
-    BNE waitfordrawtocomplete
-    JMP SCREENTRANLOOP   ;waitfordrawtocompleteST   ;do I need to do jump to a specific part of the loop?
 waitfordrawtocomplete:
     LDA drawcomplete
     CMP #$01
@@ -800,40 +803,15 @@ ContinueTest:
     BEQ MaskOutThree ;may be to far to branch
     JMP ReturnFromCollisionDown
 ExitDown:
-    LDA #$05        ;screen transition game state
-    STA gamestate
     LDA #$02
     STA exitdir
     LDY #$02        ;offset to "down" exit id
     LDA (level+Area::selfaddr1), y  ;exit id is the selfid of the next area, which should also be the offset into the AREABANK array
     STA nextareaid  ;get id of next area 
     JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
-
-FillNametables:
-    LDA level+Area::btaddr1
-    STA btptr
-    LDA level+Area::btaddr2
-    STA btptr+1
-    JSR LoadNametable
-    LDA nextarea+Area::btaddr1
-    STA btptr
-    LDA nextarea+Area::btaddr2
-    STA btptr+1
-    JSR LoadNametable
-FillAttributes:
-    JSR LoadAttributes
-    ;JSR FillAttributes ;currently not changing anything about the attributes
-FillCollMap:
-    ;LDA level+Area::cmaddr1
-    ;STA cmptr
-    ;LDA level+Area::cmaddr2
-    ;STA cmptr+1
-    ;JSR LoadCollMap
-    LDA nextarea+Area::cmaddr1
-    STA cmptr
-    LDA nextarea+Area::cmaddr2
-    STA cmptr+1
-    JSR LoadCollMap
+    LDA #$05        ;screen transition game state
+    STA gamestate
+    ;JSR LoadNextArea
     JMP ReturnFromCollisionDown
 MaskOutZero:
     LDA colltemp1
@@ -1657,7 +1635,7 @@ ReturnFromLoadAttributes:
     PLA
     RTS
 
-
+;--*--*--*--*--*--*--*Load COllision Map subroutine*--*--*--*--*--*--*--*--*--*
 LoadCollMap:
     PHA
     TXA
@@ -1679,6 +1657,56 @@ WriteCMLoop:
     CPY #$3C    ;60 bytes in COLLMAP0
     BNE WriteCMLoop
 ReturnFromLoadCollMap:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+;------------------------------Load NextArea to 2007-----------------------------------------
+LoadNextArea:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+;Make this a subroutine...call immediately after a VBLANK to get most time for performance
+    LDA #$00
+    STA $2001
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$20
+    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
+    LDA #$00
+    STA $2006           ;PPUADDR
+FillNametables:
+    ;LDA level+Area::btaddr1
+    ;STA btptr
+    ;LDA level+Area::btaddr2
+    ;STA btptr+1
+    ;JSR LoadNametable
+    LDA nextarea+Area::btaddr1
+    STA btptr
+    LDA nextarea+Area::btaddr2
+    STA btptr+1
+    JSR LoadNametable
+FillAttributes:
+    ;JSR LoadAttributes
+    JSR LoadAttributes ;currently not changing anything about the attributes
+FillCollMap:
+    ;LDA level+Area::cmaddr1
+    ;STA cmptr
+    ;LDA level+Area::cmaddr2
+    ;STA cmptr+1
+    ;JSR LoadCollMap
+    LDA nextarea+Area::cmaddr1
+    STA cmptr
+    LDA nextarea+Area::cmaddr2
+    STA cmptr+1
+    JSR LoadCollMap
+    LDA #$1E
+    STA $2001
+ReturnFromLoadNextArea:
     PLA
     TAY
     PLA
@@ -1911,9 +1939,9 @@ DONESPRITE:
     STA $2006   ;$2006 takes a double write PPUDATA
 
     ;when ready for scrolling background, only if screen is transitioning
-    ;LDA gamestate
-    ;CMP #$05        ;conditional may be unneccesary if scrollx/scrolly don't change
-    ;BNE donewithppu
+    LDA gamestate
+    CMP #$05        ;conditional may be unneccesary if scrollx/scrolly don't change
+    BNE SwapScreen
     LDA scrollx
     STA $2005
     LDA scrolly
