@@ -4,7 +4,7 @@
     .byte $1a
     .byte $02       ; 4 - 2*16k PRG ROM
     .byte $01       ; 5 - 8k CHR ROM
-    .byte %00000001 ; 6 - mapper - horizontal mirroring
+    .byte %00000000 ; 6 - mapper - horizontal mirroring
     .byte $00       ; 7
     .byte $00       ; 8 - 
     .byte $00       ; 9 - NTSC
@@ -92,7 +92,7 @@ ENTITIES        = $0600
 
 ;I had to open up the zero page in nes.cfg to range from $0002 to $00FF. Idk if that will break something later.
 .segment "ZEROPAGE"
-gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - cutscene, $05 - screen transition
+gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - cutscene, $05 - screen transition, $06 - PPUoff NT fill
 controller:         .res 1    ;reserve 1 byte for controller input
 drawcomplete:       .res 1
 scrollx:            .res 1
@@ -361,6 +361,16 @@ PALETTELOAD:
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 GAMELOOP:
+CheckForGameState:       ;After player is written, see if game has entered "transition" state to move to next area
+    LDA gamestate
+    CMP #$05
+    BEQ JumpToScreenTransition
+    CMP #$06
+    BNE DoneCheckForGameState
+    JSR LoadNextArea
+JumpToScreenTransition:
+    JMP SCREENTRANLOOP   ;waitfordrawtocompleteST   ;do I need to do jump to a specific part of the loop?
+DoneCheckForGameState:
 
 INITSPRITES:
     LDY #$00
@@ -494,13 +504,7 @@ checkarelease:
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 finishcontrols:
-CheckForScreenTransition:       ;After player is written, see if game has entered "transition" state to move to next area
-    LDA gamestate
-    CMP #$05
-    BNE DoneCheckForScreenTransition
-    JSR LoadNextArea
-    JMP SCREENTRANLOOP   ;waitfordrawtocompleteST   ;do I need to do jump to a specific part of the loop?
-DoneCheckForScreenTransition:
+
 
 processcrolling:
     ;LDA scrolly
@@ -709,9 +713,12 @@ CopyPDtoEBLoopST:
     JSR WriteEntityFromBuffer ;Subroutine to write all the changes made to player this frame
 
     LDA scrolly
-    CMP #$FE
+    CMP #$F0
     BNE waitfordrawtocompleteST
 ResetScrollY:
+    LDA swap
+    EOR #$02
+    STA swap
     LDA #$00
     STA scrolly
     LDA #$01                    ;set gamestate to main game
@@ -809,7 +816,7 @@ ExitDown:
     LDA (level+Area::selfaddr1), y  ;exit id is the selfid of the next area, which should also be the offset into the AREABANK array
     STA nextareaid  ;get id of next area 
     JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
-    LDA #$05        ;screen transition game state
+    LDA #$06        ;Load next area game state
     STA gamestate
     ;JSR LoadNextArea
     JMP ReturnFromCollisionDown
@@ -1024,8 +1031,7 @@ ReturnFromCollR:
     TAX
     PLA
     RTS
-
-
+;------------------------------------------------------------------------------------------------------------
 CheckPlayerCollisionOver:
     PHA
     TXA
@@ -1608,7 +1614,7 @@ FinishedBGWrite:
     TAX
     PLA
     RTS
-
+;----------------------------------------------------------------------------------------
 LoadAttributes:
     PHA
     TXA
@@ -1642,11 +1648,6 @@ LoadCollMap:
     PHA
     TYA
     PHA
-
-    ;LDA level+Area::cmaddr1   ;low byte
-    ;STA ptr+0
-    ;LDA level+Area::cmaddr2   ;high byte
-    ;STA ptr+1
     LDY #$00
     LDX #$00
 WriteCMLoop:
@@ -1671,27 +1672,39 @@ LoadNextArea:
     PHA
     TYA
     PHA
-;Make this a subroutine...call immediately after a VBLANK to get most time for performance
+    
+    LDA $2000
+    AND #%01111111
+    STA $2000
     LDA #$00
     STA $2001
     LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
     LDA #$20
-    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
+    STA $2006           ;PPUADDR      $2000 for nametable1
     LDA #$00
     STA $2006           ;PPUADDR
 FillNametables:
-    ;LDA level+Area::btaddr1
-    ;STA btptr
-    ;LDA level+Area::btaddr2
-    ;STA btptr+1
-    ;JSR LoadNametable
+    LDA level+Area::btaddr1
+    STA btptr
+    LDA level+Area::btaddr2
+    STA btptr+1
+    JSR LoadNametable
+    LDA #$28
+    STA $2006           ;PPUADDR      $2800 for nametable 2
+    LDA #$00
+    STA $2006           ;PPUADDR
+
     LDA nextarea+Area::btaddr1
     STA btptr
     LDA nextarea+Area::btaddr2
     STA btptr+1
     JSR LoadNametable
-FillAttributes:
-    ;JSR LoadAttributes
+
+    LDA #$23
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+    JSR LoadAttributes  
     JSR LoadAttributes ;currently not changing anything about the attributes
 FillCollMap:
     ;LDA level+Area::cmaddr1
@@ -1706,7 +1719,12 @@ FillCollMap:
     JSR LoadCollMap
     LDA #$1E
     STA $2001
-ReturnFromLoadNextArea:
+    LDA $2000
+    ORA #%10000000
+    STA $2000
+ReturnFromLoadNextArea:    
+    LDA #$05
+    STA gamestate    ;Go to screen transition
     PLA
     TAY
     PLA
@@ -1722,7 +1740,6 @@ VBLANK:
     PHA
     TYA
     PHA
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 ;begin populating the OAM data in memory
