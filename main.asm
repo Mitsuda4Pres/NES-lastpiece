@@ -184,13 +184,18 @@ InitializeFirstScreen:
     LDA AREABANK+1
     STA level+Area::selfaddr2
     ;block table
-    LDA level+Area::selfaddr1 ;if not 2, try 1
+    LDA level+Area::selfaddr1 
     CLC
     ADC #$07
-    STA level+Area::btaddr1
+    STA level+Area::btaddr1     ;OMG I can't believe on a certain write, this is landing dead on #$00, which is putting the ptr one page off.
     LDA level+Area::selfaddr2
     STA level+Area::btaddr2
-    ;collision map
+    BCS IncrementBTHightByte
+    JMP InitializeCollisionMap
+IncrementBTHightByte:
+    INC level+Area::btaddr2
+;collision map
+InitializeCollisionMap:
     LDA level+Area::selfaddr1
     CLC
     ADC #$64 ;#$64
@@ -461,6 +466,7 @@ checkup:
     BNE donecheckingdirectional
     LDA playerdata+Entity::state
     ORA #%00010000      ;set to climbing
+    AND #%11011111      ;turn of falling
     STA playerdata+Entity::state
     DEC playerdata+Entity::ypos
     INC animaframes
@@ -476,6 +482,8 @@ checkdown:
     BNE donecheckingdirectional
     LDA playerdata+Entity::state
     ORA #%00010000      ;set to climbing
+    AND #%11011111      ;turn of falling
+    STA playerdata+Entity::state
     INC playerdata+Entity::ypos
     INC animaframes
 ;JumpToDone:
@@ -674,6 +682,16 @@ waitfordrawtocomplete:
 ;When switching screens, get out of game loop entirely and use SCREENTRANLOOP
 ;Both PPU nametables should be loaded up by using the TransitionScreen BG loading subroutine
 SCREENTRANLOOP:
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+
+    NOP
+    NOP
 InitSpritesST:
     LDY #$00
     LDA #$FF
@@ -699,6 +717,13 @@ TransitionDown: ;downward exit means screen scrolls up, scrolly will decrement
     INC scrolly ;where the magic happens
     DEC playerdata+Entity::ypos
     DEC playerdata+Entity::ypos
+    LDA playerdata+Entity::ypos
+    SEC
+    SBC #$FD
+    BCC DoneTransitionDown
+    LDA #$00
+    STA playerdata+Entity::ypos
+DoneTransitionDown:
     LDX #$00
 CopyPDtoEBLoopST:
     LDA playerdata, x
@@ -711,7 +736,6 @@ CopyPDtoEBLoopST:
     LDA #$01
     STA checkvar    ;set checkvar to 1 so subroutine does not mess with stack
     JSR WriteEntityFromBuffer ;Subroutine to write all the changes made to player this frame
-
     LDA scrolly
     CMP #$F0
     BNE waitfordrawtocompleteST
@@ -754,6 +778,8 @@ CheckPlayerCollisionDown: ;IN <--- direction of check (Y)
     CLC
     ADC #$10    ;y pos of player's bottom edge (feet) - y
     CMP #$FD    ;Bottom of screen?
+    BEQ ExitDown
+    CMP #$FE
     BEQ ExitDown
     LSR         ;divide by 16
     LSR         ;meta y of player's feet
@@ -818,7 +844,6 @@ ExitDown:
     JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
     LDA #$06        ;Load next area game state
     STA gamestate
-    ;JSR LoadNextArea
     JMP ReturnFromCollisionDown
 MaskOutZero:
     LDA colltemp1
@@ -1046,7 +1071,12 @@ CheckPlayerCollisionOver:
     LSR
     LSR
     STA colltemp1
-    LDA playerdata+Entity::metay
+    LDA playerdata+Entity::ypos
+    ;Trying to fix climb screen transition bug here
+    LSR
+    LSR
+    LSR
+    LSR
     ASL
     ASL
     CLC
@@ -1078,7 +1108,7 @@ MaskOutZeroO:
     BNE NoEnvCondition
     LDA #$01            ;01 will mean over a climbable
     STA playerdata+Entity::env
-    JMP ReturnFromCollR
+    JMP ReturnFromCollO
 MaskOutOneO:
     LDX colltemp2
     LDA COLLMAPBANK, x
@@ -1087,7 +1117,7 @@ MaskOutOneO:
     BNE NoEnvCondition
     LDA #$01            ;01 will mean over a climbable
     STA playerdata+Entity::env
-    JMP ReturnFromCollR
+    JMP ReturnFromCollO
 MaskOutTwoO:
     LDX colltemp2
     LDA COLLMAPBANK, x
@@ -1096,7 +1126,7 @@ MaskOutTwoO:
     BNE NoEnvCondition
     LDA #$01            ;01 will mean over a climbable
     STA playerdata+Entity::env
-    JMP ReturnFromCollR
+    JMP ReturnFromCollO
 MaskOutThreeO:
     LDX colltemp2
     LDA COLLMAPBANK, x
@@ -1109,8 +1139,6 @@ MaskOutThreeO:
 NoEnvCondition:
     LDA #$00
     STA playerdata+Entity::env
-    LDA playerdata+Entity::state
-    AND #%11001111
 ReturnFromCollO:
     PLA
     TAX
@@ -1233,12 +1261,6 @@ ReturnFromStoreEntity:
 ;-------------------Load Screen Subroutines----------------------------------------------------------
 
 SetupNextArea:
-    NOP
-    CLC
-    NOP
-    CLC
-    NOP
-
     PHA
     TXA
     PHA
@@ -1336,16 +1358,19 @@ ClearLoop:
     BNE ClearLoop
     PLA
     TAY
+    
 GetBlocksInRow:
     LDA (btptr), y
     CMP #$FF
     BEQ BlocksEndOfRow
-    STA blockrow, x      ;Ok, I'm using y as the pointer index, but I can't use it as the blockrow index too, it's offset
+    STA blockrow, x      
     INX
     INY
-    CPY #$FF       ;turns out it did happen lmao. Of course it did. If I make a check, it needs to be against $FF, assuming a level could be all blocks
-    BEQ BlocksEndOfRow ;this should never happen, but if we are iterating past 16, let's call it quits. Optimization, remove this
-    ;INC ptr+1           ;next address in BLOCKTABLE (Maybe needed if BLOCKTABLE is bigger than 256)
+    ;LDA btptr, y
+    ;CMP #$FF
+    ;BNE ContinueGetBlocks
+    ;INC btptr+1
+ContinueGetBlocks:
     JMP GetBlocksInRow
 BlocksEndOfRow:         ;now 'blockrow' is filled with all block data on that row
     INY
@@ -2012,7 +2037,7 @@ EXITS0:          ;$FF is no exit
 CONTENTS0:
     .byte $07   ;offset to blocktable
     .byte $64   ;offset to collmap
-BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all they need is position X{0000} Y{0000}
+BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all they need is position X{0000}  --Y{0000}-- Actually they don't need Y
     .byte $00, $10,           $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
     .byte $00,                                                                       $F0, $FF
     .byte $00, $10, $20, $30, $40, $50,                                              $F0, $FF
@@ -2056,7 +2081,7 @@ EXITS1:
     .byte $FF   ;right
 CONTENTS1:
     .byte $07   ;offset to blocktable (maybe unecessary if nothing is variable length before the block table)
-    .byte $54   ;offset to collmap
+    .byte $5C   ;offset to collmap
 BLOCKTABLE1:
     .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
@@ -2065,11 +2090,11 @@ BLOCKTABLE1:
     .byte $00,                                                        $C8,           $F0, $FF
     .byte $00,                                                                       $F0, $FF
     .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                   $B0, $C0, $D0,      $F0, $FF
     .byte $00,                                                                       $F0, $FF                              
     .byte $00,                                                                       $F0, $FF
     .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
+    .byte $00,                               $70, $80, $90, $A0, $B0,                $F0, $FF
     .byte $00,                                                                       $F0, $FF
     .byte $00,                                                                       $F0, $FF
     .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
@@ -2083,11 +2108,11 @@ COLLMAP1:
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000001, %01010001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000001, %01010101, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01010101, %01010101, %01010101, %01010101
