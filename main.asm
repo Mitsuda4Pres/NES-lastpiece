@@ -1,3 +1,15 @@
+;The Last Piece
+;An NES game conceived for the Goblin Bunker Game Jam, May 2025
+;Mitsuda4Pres
+;TODO: -Entity manager for each area to govern items/enemies
+;   -Jump
+;   -Item collection on walk-over
+;   -Title screen
+;   -Damage condition/damage-dealing floors/fall damage
+;   -Game over state/screen
+
+
+
 .segment "HEADER"
 
     .byte "NES"
@@ -31,6 +43,8 @@ JOYPAD2         = $4017
 
 ;;;Custom registers/maps
 AREABANK        = $0440     ;192 bytes for 96 areas. Do not exceed or you will bleed into $0500!
+SPRITELOOKUP    = $0480     ;96 bytes, each entry 4 bytes, 24 entries
+PALETTELOOKUP   = $04E0     ;32 bytes, each entry 1 byte
 COLLMAPBANK     = $0500    ;one page is 256 bytes. Is this enough or do I bleed into 0600?
 ENTITIES        = $0600
 
@@ -43,7 +57,7 @@ ENTITIES        = $0600
 .endscope
 
 .struct Entity          ;15b
-    type        .byte
+    type        .byte   ;will correspond with the in the spritelookup table
     xpos        .byte
     ypos        .byte
     state       .byte
@@ -52,6 +66,8 @@ ENTITIES        = $0600
     ;0         0               0     0       0     0    0     0 -
     ;States for Treasure: 0 - untouched, 1 - retrieved
     ;States for Enemy: 0 - dead, 1 - alive, 2 - attacking
+    sproffset   .byte
+    paloffset   .byte
     tlspr       .byte
     trspr       .byte
     blspr       .byte
@@ -79,13 +95,15 @@ ENTITIES        = $0600
     state       .byte
 .endstruct
 
-.struct Area            ;6b
+.struct Area            ;8b
     selfaddr1   .byte
     selfaddr2   .byte
     btaddr1     .byte
     btaddr2     .byte
     cmaddr1     .byte
     cmaddr2     .byte
+    entaddr1    .byte
+    entaddr2    .byte
 .endstruct
 
 .segment "STARTUP"
@@ -113,14 +131,15 @@ metatile:           .res .sizeof(Metatile)          ;11b
 entitybuffer:       .res .sizeof(Entity)            ;15b
 blockrow:           .res 16
 spritemem:          .res 2
-level:              .res .sizeof(Area)              ;6b
-nextarea:           .res .sizeof(Area)
+level:              .res .sizeof(Area)              ;8b
+nextarea:           .res .sizeof(Area)              ;8b
 nextareaid:         .res 1
 btptr:              .res 2
 cmptr:              .res 2
+entptr:             .res 2
 exitdir:            .res 1      ;1- up, 2 - down, 3 - left, 4 - right
 ;ptr:                .res 2
-;total zero page reserved: 157b (max 254)
+;total zero page reserved: 161b (max 254)
 
 .segment "CODE"
 
@@ -163,7 +182,7 @@ CLEARMEM:
 
     LDX #$00
     LDY #$00
-WriteAreaBankLoop:      ;Write all areas PRGROM addresses into RAM lookup table
+WriteAreaBank:      ;Write all areas PRGROM addresses into RAM lookup table
                         ;Future optimization: if I keep a self-size byte in the AREA arrays, I can loop this and not hardcode.
     LDA #<AREA0
     STA AREABANK, x
@@ -176,8 +195,9 @@ WriteAreaBankLoop:      ;Write all areas PRGROM addresses into RAM lookup table
     INX
     LDA #>AREA1
     STA AREABANK, x
-    
+
     LDX #$00
+    
 InitializeFirstScreen:
     LDA AREABANK
     STA level+Area::selfaddr1
@@ -242,7 +262,6 @@ InitializePlayer:
     STA ENTITIES, x
     INX
     LDA #$00
-    ;TODO: remove playersprite struct, included into entity struct
     STA playerdata+Entity::tlpal
     STA playerdata+Entity::trpal
     STA playerdata+Entity::blpal
@@ -263,53 +282,55 @@ InitializePlayer:
     INX
     STA ENTITIES, x     ;zero out meta y
     INX
+    LDA #$FF
+    STA ENTITIES, x     ;end of array
     ;15 writes to ENTITIES array
     
 
-InitializeLastPiece:
+;InitializeLastPiece:
     ;The only startingg entity is the last medallion piece
-    LDA #EntityType::Treasure
-    STA ENTITIES, x
-    INX
-    LDA #$E0    ;xpos
-    STA ENTITIES, x
-    INX
-    LDA #$D0    ;ypos
-    STA ENTITIES, x
-    INX
-    LDA #$80    ;state
-    STA ENTITIES, x
-    INX
-    LDA #$26    ;tl sprite
-    STA ENTITIES, x
-    INX
-    LDA #$27    ;tr sprite
-    STA ENTITIES, x
-    INX
-    LDA #$36    ;bl prite
-    STA ENTITIES, x
-    INX
-    LDA #$37    ;br sprite
-    STA ENTITIES, x
-    INX
-    LDA #$01    ;palette
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x ;env
-    INX
-    STA ENTITIES, x ;metax  -deprecate out to a zero page variable for player?
-    INX
-    STA ENTITIES, x ;metay
-    INX
-    LDA #$FF
-    STA ENTITIES, x
-    INX
+    ;LDA #EntityType::Treasure
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA #$E0    ;xpos
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA #$D0    ;ypos
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA #$80    ;state
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA #$26    ;tl sprite
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA #$27    ;tr sprite
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA #$36    ;bl prite
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA #$37    ;br sprite
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA #$01    ;palette
+    ;STA ENTITIES, x
+    ;INX
+    ;STA ENTITIES, x
+    ;INX
+    ;STA ENTITIES, x
+    ;INX
+    ;STA ENTITIES, x
+    ;INX
+    ;STA ENTITIES, x ;env
+    ;INX
+    ;STA ENTITIES, x ;metax  -deprecate out to a zero page variable for player?
+    ;INX
+    ;STA ENTITIES, x ;metay
+    ;INX
+    ;LDA #$FF
+    ;STA ENTITIES, x
+    ;INX
     ;LDA #$0A ;player plus medallion pieces
     ;STA totalsprites
 ;Clear register and set palette address
@@ -343,9 +364,14 @@ PALETTELOAD:
     STA cmptr
     LDA level+Area::cmaddr2
     STA cmptr+1
+    LDA level+Area::entaddr1
+    STA entptr
+    LDA level+Area::entaddr2
+    STA entptr+1
     JSR LoadNametable
     JSR LoadAttributes
     JSR LoadCollMap
+    ;JSR LoadAreaEntities    ;Hold off until I add entities to the AREA0 array
 
     JSR WAITFORVBLANK
 
@@ -1259,7 +1285,6 @@ ReturnFromStoreEntity:
 
 
 ;-------------------Load Screen Subroutines----------------------------------------------------------
-
 SetupNextArea:
     PHA
     TXA
@@ -1299,9 +1324,23 @@ NAContinueToLoadCM:
     LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
     STA nextarea+Area::cmaddr2
     BCS NAIncrementHighByteCM
-    JMP NAReturn
+    JMP NAContinueToLoadEntities
 NAIncrementHighByteCM:
     INC nextarea+Area::cmaddr2
+NAContinueToLoadEntities:
+    LDY #$07
+    LDA (nextarea+Area::selfaddr1), y   ;get collmap offset, repeat process
+    STA nextarea+Area::entaddr1          ;use as variable for a moment
+    LDA nextarea+Area::selfaddr1
+    CLC
+    ADC nextarea+Area::entaddr1
+    STA nextarea+Area::entaddr1
+    LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
+    STA nextarea+Area::entaddr2
+    BCS NAIncrementHighByteEntities
+    JMP NAReturn
+NAIncrementHighByteEntities:
+    INC nextarea+Area::entaddr2
 NAReturn:
     ;Done. "nextarea" struct is populated.
     PLA
@@ -1690,6 +1729,45 @@ ReturnFromLoadCollMap:
     PLA
     RTS
 
+;--*--*--*--*--*--*--*Load Entities subroutine*--*--*--*--*--*--*--*--*--*
+;Should I use the StoreEntities subroutine or bypass it? It should save a handful of cycles to do
+;everything here, but a bit redundant. Start with using subroutine, if need to optimize out later, fine.
+;This way, all entities are stored in the same fashion, less likely to have bugs.
+;On second thought, this needs to clear all entities except the player, so the loop will be written into the subroutine, starting from byte $10
+LoadAreaEntities:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+    LDX #$10    ;first address after player entity data
+    LDY #$00    
+WriteEntitiesLoop:  ;type, x, y, state, tlspr, trspr, blspr, brspr, tlpal, trpal, blpal, brpal, env, metax, metay
+    LDA (entptr), y
+    STA ENTITIES, x
+    INX
+    INY
+    LDA (entptr), y
+    AND #%11110000  ;xpos will by the high byte alone. Always a multiple of 16(meta position)
+    STA ENTITIES, x
+    INX
+    LDA (entptr), y
+    ASL
+    ASL
+    ASL
+    ASL             ;move low byte into high byte for y pos
+    STA ENTITIES, x
+    LDA #$00        ;state
+    STA ENTITIES, x
+    ;START HERE
+ReturnFromLoadEntities:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
 ;------------------------------Load NextArea to 2007-----------------------------------------
 LoadNextArea:
     PHA
@@ -2026,6 +2104,10 @@ PALETTE:  ;seems like background can only access last 4 palettes?
     ;TODO: potential for compressing again by half:
     ;If I have a row-ender, I don't need a Y value, so II can pack two blocks into one byte: X1{0000}X2{0000}
 
+;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
+;--*--*--*--*--*--*--*--*--Game areas ROM--*--*--*--*--*--*--*--*--*--*--*
+;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
+
 AREA0:  ;How to traverse these memory chunks. Start with a little "table of contents"? A few bytes to load as an adder to each segment?
 SELFID0:
     .byte $00
@@ -2080,8 +2162,9 @@ EXITS1:
     .byte $FF   ;left
     .byte $FF   ;right
 CONTENTS1:
-    .byte $07   ;offset to blocktable (maybe unecessary if nothing is variable length before the block table)
-    .byte $5C   ;offset to collmap
+    .byte $08   ;offset to blocktable (maybe unecessary if nothing is variable length before the block table)
+    .byte $5D   ;offset to collmap
+    .byte $99   ;offset to entity list
 BLOCKTABLE1:
     .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
@@ -2101,21 +2184,43 @@ BLOCKTABLE1:
 ;+84 to collmap
 ;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
 COLLMAP1:
-    .byte %01010000, %01010101, %01010101, %10010101
-    .byte %01000000, %00000000, %00000000, %10000001
-    .byte %01000000, %00000000, %00000000, %10000001
-    .byte %01000000, %00000000, %00000000, %10000001
-    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01010000, %01010101, %01010101, %10010101 ;60
+    .byte %01000000, %00000000, %00000000, %10000001    ;64
+    .byte %01000000, %00000000, %00000000, %10000001    ;68
+    .byte %01000000, %00000000, %00000000, %10000001    ;6C
+    .byte %01000000, %00000000, %00000000, %10000001    ;70
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000001, %01010001
-    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001    ;80
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000001, %01010101, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001    ;90
     .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01010101, %01010101, %01010101, %01010101
+    .byte %01010101, %01010101, %01010101, %01010101    ;98
+ENTLIST1:
+    .byte $02, $ED      ;type (see EntityType struct), $XY meta location
+    .byte $FF           ;End of list
+
+
+;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
+;--*--*--*--*--*--*--*--*--Sprite Look-up Table ROM*--*--*--*--*--*--*--*
+;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
+SPRITELOOKUP:   ;first square (tl) of each metatile
+    .byte $00, $02, $04, $06, $08   ;player
+    .byte $20                      ;medallion top-left (5)
+    .byte $22                      ;medallion top-right (6)
+    .byte $24                      ;medallion bottom-left (7)
+    .byte $26                      ;medallion bottom-right (8)
+    .byte $0E                      ;hat     
+;START HERE!!!
+PALETTELOOKUP:
+    .byte $00, $FF
+    .byte $01, $FF
+    .byte $01, $FF
+    .byte $01, $FF
+    .byte $01, $FF
 
 
 .segment "VECTORS"
