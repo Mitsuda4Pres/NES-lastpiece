@@ -1,15 +1,3 @@
-;The Last Piece
-;An NES game conceived for the Goblin Bunker Game Jam, May 2025
-;Mitsuda4Pres
-;TODO: -Entity manager for each area to govern items/enemies
-;   -Jump
-;   -Item collection on walk-over
-;   -Title screen
-;   -Damage condition/damage-dealing floors/fall damage
-;   -Game over state/screen
-
-
-
 .segment "HEADER"
 
     .byte "NES"
@@ -43,10 +31,7 @@ JOYPAD2         = $4017
 
 ;;;Custom registers/maps
 AREABANK        = $0440     ;192 bytes for 96 areas. Do not exceed or you will bleed into $0500!
-SPRITERAM    = $0480     ;96 bytes, each entry 4 bytes, 24 entries
-PALETTERAM   = $04E0     ;32 bytes, each entry 1 byte
 COLLMAPBANK     = $0500    ;one page is 256 bytes. Is this enough or do I bleed into 0600?
-GAMETEXT        = $05C0     ;64 bytes for text
 ENTITIES        = $0600
 
 ;If I do a 2 bit coll map, each tile can have 4 properties: "not there", "solid", "climbable", "damaging"
@@ -58,7 +43,7 @@ ENTITIES        = $0600
 .endscope
 
 .struct Entity          ;15b
-    type        .byte   ;will correspond with the in the spritelookup table
+    type        .byte
     xpos        .byte
     ypos        .byte
     state       .byte
@@ -67,8 +52,6 @@ ENTITIES        = $0600
     ;0         0               0     0       0     0    0     0 -
     ;States for Treasure: 0 - untouched, 1 - retrieved
     ;States for Enemy: 0 - dead, 1 - alive, 2 - attacking
-    sproffset   .byte
-    paloffset   .byte
     tlspr       .byte
     trspr       .byte
     blspr       .byte
@@ -96,22 +79,20 @@ ENTITIES        = $0600
     state       .byte
 .endstruct
 
-.struct Area            ;8b
+.struct Area            ;6b
     selfaddr1   .byte
     selfaddr2   .byte
     btaddr1     .byte
     btaddr2     .byte
     cmaddr1     .byte
     cmaddr2     .byte
-    entaddr1    .byte
-    entaddr2    .byte
 .endstruct
 
 .segment "STARTUP"
 
 ;I had to open up the zero page in nes.cfg to range from $0002 to $00FF. Idk if that will break something later.
 .segment "ZEROPAGE"
-gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - cutscene, $05 - screen transition, $06 - PPUoff NT fill, $07 - PPUoff NT Fill, no transition
+gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - cutscene, $05 - screen transition, $06 - PPUoff NT fill
 controller:         .res 1    ;reserve 1 byte for controller input
 drawcomplete:       .res 1
 scrollx:            .res 1
@@ -132,19 +113,14 @@ metatile:           .res .sizeof(Metatile)          ;11b
 entitybuffer:       .res .sizeof(Entity)            ;15b
 blockrow:           .res 16
 spritemem:          .res 2
-level:              .res .sizeof(Area)              ;8b
-nextarea:           .res .sizeof(Area)              ;8b
+level:              .res .sizeof(Area)              ;6b
+nextarea:           .res .sizeof(Area)
 nextareaid:         .res 1
 btptr:              .res 2
 cmptr:              .res 2
-entptr:             .res 2
 exitdir:            .res 1      ;1- up, 2 - down, 3 - left, 4 - right
-
-textx:              .res 1
-texty:              .res 1
-textpal:            .res 1
 ;ptr:                .res 2
-;total zero page reserved: 164b (max 254)
+;total zero page reserved: 157b (max 254)
 
 .segment "CODE"
 
@@ -182,13 +158,12 @@ CLEARMEM:
     STA $0200, x    ;Fills $0200 with $FF, not 0. 
     LDA #$00
     STA controller
-    STA gamestate
     INX
     BNE CLEARMEM
 
     LDX #$00
     LDY #$00
-WriteAreaBank:      ;Write all areas PRGROM addresses into RAM lookup table
+WriteAreaBankLoop:      ;Write all areas PRGROM addresses into RAM lookup table
                         ;Future optimization: if I keep a self-size byte in the AREA arrays, I can loop this and not hardcode.
     LDA #<AREA0
     STA AREABANK, x
@@ -201,19 +176,8 @@ WriteAreaBank:      ;Write all areas PRGROM addresses into RAM lookup table
     INX
     LDA #>AREA1
     STA AREABANK, x
-
+    
     LDX #$00
-
-CheckGameState:
-    ;LDA gamestate
-    ;CMP #$00
-    ;BEQ InitializeTitleScreen
-    ;JMP InitializeFirstScreen
-InitializeTitleScreen:
-    ;JMP InitializePlayer
-
-;This will get deprecated from initialization once title screen is implemented. Leave in for easier debugging
-;(switch gamestate off $00 to bypass titlescreen)
 InitializeFirstScreen:
     LDA AREABANK
     STA level+Area::selfaddr1
@@ -244,7 +208,6 @@ IncrementCMHighByte:
     INC level+Area::cmaddr2
 ContinueToInitPlayer:
     LDX #$00
-
 InitializePlayer:
     LDA #EntityType::PlayerType
     STA playerdata+Entity::type
@@ -279,6 +242,7 @@ InitializePlayer:
     STA ENTITIES, x
     INX
     LDA #$00
+    ;TODO: remove playersprite struct, included into entity struct
     STA playerdata+Entity::tlpal
     STA playerdata+Entity::trpal
     STA playerdata+Entity::blpal
@@ -299,55 +263,53 @@ InitializePlayer:
     INX
     STA ENTITIES, x     ;zero out meta y
     INX
-    LDA #$FF
-    STA ENTITIES, x     ;end of array
     ;15 writes to ENTITIES array
     
 
-;InitializeLastPiece:
+InitializeLastPiece:
     ;The only startingg entity is the last medallion piece
-    ;LDA #EntityType::Treasure
-    ;STA ENTITIES, x
-    ;INX
-    ;LDA #$E0    ;xpos
-    ;STA ENTITIES, x
-    ;INX
-    ;LDA #$D0    ;ypos
-    ;STA ENTITIES, x
-    ;INX
-    ;LDA #$80    ;state
-    ;STA ENTITIES, x
-    ;INX
-    ;LDA #$26    ;tl sprite
-    ;STA ENTITIES, x
-    ;INX
-    ;LDA #$27    ;tr sprite
-    ;STA ENTITIES, x
-    ;INX
-    ;LDA #$36    ;bl prite
-    ;STA ENTITIES, x
-    ;INX
-    ;LDA #$37    ;br sprite
-    ;STA ENTITIES, x
-    ;INX
-    ;LDA #$01    ;palette
-    ;STA ENTITIES, x
-    ;INX
-    ;STA ENTITIES, x
-    ;INX
-    ;STA ENTITIES, x
-    ;INX
-    ;STA ENTITIES, x
-    ;INX
-    ;STA ENTITIES, x ;env
-    ;INX
-    ;STA ENTITIES, x ;metax  -deprecate out to a zero page variable for player?
-    ;INX
-    ;STA ENTITIES, x ;metay
-    ;INX
-    ;LDA #$FF
-    ;STA ENTITIES, x
-    ;INX
+    LDA #EntityType::Treasure
+    STA ENTITIES, x
+    INX
+    LDA #$E0    ;xpos
+    STA ENTITIES, x
+    INX
+    LDA #$D0    ;ypos
+    STA ENTITIES, x
+    INX
+    LDA #$80    ;state
+    STA ENTITIES, x
+    INX
+    LDA #$26    ;tl sprite
+    STA ENTITIES, x
+    INX
+    LDA #$27    ;tr sprite
+    STA ENTITIES, x
+    INX
+    LDA #$36    ;bl prite
+    STA ENTITIES, x
+    INX
+    LDA #$37    ;br sprite
+    STA ENTITIES, x
+    INX
+    LDA #$01    ;palette
+    STA ENTITIES, x
+    INX
+    STA ENTITIES, x
+    INX
+    STA ENTITIES, x
+    INX
+    STA ENTITIES, x
+    INX
+    STA ENTITIES, x ;env
+    INX
+    STA ENTITIES, x ;metax  -deprecate out to a zero page variable for player?
+    INX
+    STA ENTITIES, x ;metay
+    INX
+    LDA #$FF
+    STA ENTITIES, x
+    INX
     ;LDA #$0A ;player plus medallion pieces
     ;STA totalsprites
 ;Clear register and set palette address
@@ -366,30 +328,24 @@ PALETTELOAD:
     BNE PALETTELOAD
 
 ;;;;;;;;;;;;;;;;;;;;;;;;
-    JSR LoadBlankNametable
-    ;LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
-    ;LDA #$20
-    ;STA $2006           ;PPUADDR      we are using $2000 for graphics memory
-    ;LDA #$00
-    ;STA $2006           ;PPUADDR
 
-;handle in SetupNextArea jsr
-    ;LDA level+Area::btaddr1
-    ;STA btptr
-    ;LDA level+Area::btaddr2
-    ;STA btptr+1
-    ;LDA level+Area::cmaddr1
-    ;STA cmptr
-    ;LDA level+Area::cmaddr2
-    ;STA cmptr+1
-    ;LDA level+Area::entaddr1
-    ;STA entptr
-    ;LDA level+Area::entaddr2
-    ;STA entptr+1
-    ;JSR LoadNametable
-    ;JSR LoadAttributes
-    ;JSR LoadCollMap
-    ;JSR LoadAreaEntities    ;Hold off until I add entities to the AREA0 array
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$20
+    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
+    LDA #$00
+    STA $2006           ;PPUADDR
+
+    LDA level+Area::btaddr1
+    STA btptr
+    LDA level+Area::btaddr2
+    STA btptr+1
+    LDA level+Area::cmaddr1
+    STA cmptr
+    LDA level+Area::cmaddr2
+    STA cmptr+1
+    JSR LoadNametable
+    JSR LoadAttributes
+    JSR LoadCollMap
 
     JSR WAITFORVBLANK
 
@@ -403,13 +359,8 @@ PALETTELOAD:
     LDA #$02
     STA spritemem+1
 
-    LDA #<TITLESCREEN
-    STA entptr
-    LDA #>TITLESCREEN
-    STA entptr+1
-    JSR WriteText
-    ;JMP GAMELOOP
-    JMP TITLESCREENLOOP
+    JMP GAMELOOP
+
 
 
 
@@ -417,18 +368,11 @@ PALETTELOAD:
 GAMELOOP:
 CheckForGameState:       ;After player is written, see if game has entered "transition" state to move to next area
     LDA gamestate
-    CMP #$00
-    BEQ JumpToTitleScreenLoop
     CMP #$05
     BEQ JumpToScreenTransition
     CMP #$06
-    BEQ JumpToLoadNextArea
-    CMP #$07
     BNE DoneCheckForGameState
-JumpToLoadNextArea:
     JSR LoadNextArea
-JumpToTitleScreenLoop:
-    JMP TITLESCREENLOOP
 JumpToScreenTransition:
     JMP SCREENTRANLOOP   ;waitfordrawtocompleteST   ;do I need to do jump to a specific part of the loop?
 DoneCheckForGameState:
@@ -551,19 +495,6 @@ donecheckingdirectional:
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 checkbuttons:
-checkstart:
-    LDA controller
-    AND #$10
-    BEQ checka
-    LDA gamestate
-    CMP #$00
-    BNE PauseGame
-    LDA #$07            ;screen change, no transition
-    STA gamestate
-    LDA #$00
-    STA nextareaid
-    JSR SetupNextArea
-PauseGame:
 checka:
     LDA controller
     AND #$80
@@ -747,38 +678,18 @@ waitfordrawtocomplete:
 
     JMP GAMELOOP
 
-TITLESCREENLOOP:
 
-InitSpritesTS:
-    LDY #$00
-    LDA #$FF
-InitSpriteLoopTS:
-    STA (spritemem), y
-    INY
-    EOR #$FF
-    STA (spritemem), y
-    INY
-    STA (spritemem), y
-    INY
-    EOR #$FF
-    STA (spritemem), y
-    INY
-    BEQ ContinueTitleScreen
-    JMP InitSpriteLoopTS
-ContinueTitleScreen:
-
-
-
-waitfordrawtocompleteTS:
-    LDA drawcomplete
-    CMP #$01
-    BNE waitfordrawtocompleteTS
-    LDA #$00
-    STA drawcomplete
-    JMP TITLESCREENLOOP
 ;When switching screens, get out of game loop entirely and use SCREENTRANLOOP
 ;Both PPU nametables should be loaded up by using the TransitionScreen BG loading subroutine
 SCREENTRANLOOP:
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+
     NOP
     NOP
 InitSpritesST:
@@ -1348,6 +1259,7 @@ ReturnFromStoreEntity:
 
 
 ;-------------------Load Screen Subroutines----------------------------------------------------------
+
 SetupNextArea:
     PHA
     TXA
@@ -1387,23 +1299,9 @@ NAContinueToLoadCM:
     LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
     STA nextarea+Area::cmaddr2
     BCS NAIncrementHighByteCM
-    JMP NAContinueToLoadEntities
+    JMP NAReturn
 NAIncrementHighByteCM:
     INC nextarea+Area::cmaddr2
-NAContinueToLoadEntities:
-    LDY #$07
-    LDA (nextarea+Area::selfaddr1), y   ;get collmap offset, repeat process
-    STA nextarea+Area::entaddr1          ;use as variable for a moment
-    LDA nextarea+Area::selfaddr1
-    CLC
-    ADC nextarea+Area::entaddr1
-    STA nextarea+Area::entaddr1
-    LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
-    STA nextarea+Area::entaddr2
-    BCS NAIncrementHighByteEntities
-    JMP NAReturn
-NAIncrementHighByteEntities:
-    INC nextarea+Area::entaddr2
 NAReturn:
     ;Done. "nextarea" struct is populated.
     PLA
@@ -1742,40 +1640,6 @@ FinishedBGWrite:
     PLA
     RTS
 ;----------------------------------------------------------------------------------------
-LoadBlankNametable:
-    PHA
-    TXA
-    PHA
-    TYA
-    PHA
-
-    LDY #$00            ;use y index to cycle through bg sprite sheet
-
-    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
-    LDA #$20
-    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
-    LDA #$00
-    STA $2006           ;PPUADDR
-LoadBlankNTPrep:
-    LDX #$08            ;loop four times $FF to get 1 full kilobyte
-    LDY #$00
-    LDA #$FE
-LoadBlankNTLoop:
-    STA $2007           ;PPUDATA
-    INY
-    BNE LoadBlankNTLoop         ;when Y cycles past $FF to $00, decrement X
-    DEX
-    BEQ LoadBlankNTDone          ;jump to end if X hits 0
-    JMP LoadBlankNTLoop
-LoadBlankNTDone:
-
-    PLA
-    TAY
-    PLA
-    TAX
-    PLA
-    RTS
-;----------------------------------------------------------------------------------------
 LoadAttributes:
     PHA
     TXA
@@ -1819,45 +1683,6 @@ WriteCMLoop:
     CPY #$3C    ;60 bytes in COLLMAP0
     BNE WriteCMLoop
 ReturnFromLoadCollMap:
-    PLA
-    TAY
-    PLA
-    TAX
-    PLA
-    RTS
-
-;--*--*--*--*--*--*--*Load Entities subroutine*--*--*--*--*--*--*--*--*--*
-;Should I use the StoreEntities subroutine or bypass it? It should save a handful of cycles to do
-;everything here, but a bit redundant. Start with using subroutine, if need to optimize out later, fine.
-;This way, all entities are stored in the same fashion, less likely to have bugs.
-;On second thought, this needs to clear all entities except the player, so the loop will be written into the subroutine, starting from byte $10
-LoadAreaEntities:
-    PHA
-    TXA
-    PHA
-    TYA
-    PHA
-    LDX #$10    ;first address after player entity data
-    LDY #$00    
-WriteEntitiesLoop:  ;type, x, y, state, tlspr, trspr, blspr, brspr, tlpal, trpal, blpal, brpal, env, metax, metay
-    LDA (entptr), y
-    STA ENTITIES, x
-    INX
-    INY
-    LDA (entptr), y
-    AND #%11110000  ;xpos will by the high byte alone. Always a multiple of 16(meta position)
-    STA ENTITIES, x
-    INX
-    LDA (entptr), y
-    ASL
-    ASL
-    ASL
-    ASL             ;move low byte into high byte for y pos
-    STA ENTITIES, x
-    LDA #$00        ;state
-    STA ENTITIES, x
-    ;START HERE
-ReturnFromLoadEntities:
     PLA
     TAY
     PLA
@@ -1923,65 +1748,8 @@ FillCollMap:
     ORA #%10000000
     STA $2000
 ReturnFromLoadNextArea:    
-    LDA gamestate
-    CMP #$07
-    BEQ ContinueNoTransition
     LDA #$05
     STA gamestate    ;Go to screen transition
-    JMP FinishReturnFromLoadNextArea
-ContinueNoTransition:
-    LDA #$01
-    STA gamestate
-FinishReturnFromLoadNextArea:
-    PLA
-    TAY
-    PLA
-    TAX
-    PLA
-    RTS
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-WriteText:  ;uses entptr as ptr into text storage ROM, write text into GAMETEXT ram
-    PHA
-    TXA
-    PHA
-    TYA
-    PHA
-    LDX #$00
-    LDY #$00
-    LDA #$00
-TextLineLoop:
-GetTextAttributes:
-    LDA (entptr), y ;xpos
-    STA GAMETEXT, x
-    INY
-    INX
-    LDA (entptr), y ;ypos
-    STA GAMETEXT, x
-    INY
-    INX
-    LDA (entptr), y ;palette
-    STA GAMETEXT, x
-    INY
-    INX
-TextContentLoop:
-    LDA (entptr), y
-    STA GAMETEXT, x
-    CMP #$FF        ;EOL?
-    BEQ CheckEndOfFile
-    INY
-    INX
-    JMP TextContentLoop
-CheckEndOfFile:
-    INY
-    INX
-    LDA (entptr), y
-    STA GAMETEXT, x
-    INX
-    INY
-    CMP #$FF
-    BNE TextLineLoop
-ReturnFromWriteText:
     PLA
     TAY
     PLA
@@ -2192,56 +1960,13 @@ ClearMetatile:
     STA metatile+Metatile::xpos
     STA metatile+Metatile::ypos
 DoneDrawingMetatile:
+
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 CHECKENDSPRITE:
     LDA ENTITIES, x
     CMP #$FF
     BEQ DONESPRITE
     JMP LoadEntityLoop
-
-    LDX #$00
-    LDA #$00
-    STA counter     ;clear to use?
-DRAWTEXT:
-DrawTextLineLoop:
-    LDA GAMETEXT, x ;xpos
-    STA textx
-    INX
-    LDA GAMETEXT, x ;ypos
-    STA texty
-    INX
-    LDA GAMETEXT, x ;palette
-    STA textpal
-    INX
-DrawTextContentLoop:
-    LDA GAMETEXT, x
-    CMP #$FF            ;EOL?
-    BEQ DoneCurrentLine
-    LDA texty
-    STA (spritemem), y
-    INY
-    LDA GAMETEXT, x
-    STA (spritemem), y
-    INY
-    INX
-    LDA textpal
-    STA (spritemem), y
-    INY
-    LDA textx
-    CLC
-    ADC counter
-    STA (spritemem), y
-    LDA counter
-    CLC
-    ADC #$08
-    STA counter
-DoneCurrentLine:
-    INX
-    LDA GAMETEXT, x
-    CMP #$FF        ;EOF?
-    BNE DrawTextLineLoop
-DoneDrawingText:
-
 
 DONESPRITE:
 ;DMA copy sprites
@@ -2300,18 +2025,6 @@ PALETTE:  ;seems like background can only access last 4 palettes?
     
     ;TODO: potential for compressing again by half:
     ;If I have a row-ender, I don't need a Y value, so II can pack two blocks into one byte: X1{0000}X2{0000}
-;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
-;--*--*--*--*--*--*--*--*--Title Screen ROM--*--*--*--*--*--*--*--*--*--*--*
-;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
-;Replace with rad image.
-;Replace text with a draw text subroutine
-TITLESCREEN:    ;3 lines of text
-    .byte $48, $58, $00, $ED, $E1, $DE, $D0, $E5, $DA, $EC, $ED, $D0, $E9, $E2, $DE, $DC, $DE, $FF ;x,y,text, EOL
-    .byte $58, $70, $00, $E2, $E7, $DC, $DB, $E2, $E7, $D0, $E5, $E5, $DC, $FF
-    .byte $58, $B0, $00, $E9, $EB, $DE, $EC, $EC, $D0, $EC, $ED, $DA, $EB, $ED, $FF, $FF       ;EOL, EOF
-;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
-;--*--*--*--*--*--*--*--*--Game areas ROM--*--*--*--*--*--*--*--*--*--*--*
-;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
 
 AREA0:  ;How to traverse these memory chunks. Start with a little "table of contents"? A few bytes to load as an adder to each segment?
 SELFID0:
@@ -2367,9 +2080,8 @@ EXITS1:
     .byte $FF   ;left
     .byte $FF   ;right
 CONTENTS1:
-    .byte $08   ;offset to blocktable (maybe unecessary if nothing is variable length before the block table)
-    .byte $5D   ;offset to collmap
-    .byte $99   ;offset to entity list
+    .byte $07   ;offset to blocktable (maybe unecessary if nothing is variable length before the block table)
+    .byte $5C   ;offset to collmap
 BLOCKTABLE1:
     .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
@@ -2389,45 +2101,22 @@ BLOCKTABLE1:
 ;+84 to collmap
 ;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
 COLLMAP1:
-    .byte %01010000, %01010101, %01010101, %10010101 ;60
-    .byte %01000000, %00000000, %00000000, %10000001    ;64
-    .byte %01000000, %00000000, %00000000, %10000001    ;68
-    .byte %01000000, %00000000, %00000000, %10000001    ;6C
-    .byte %01000000, %00000000, %00000000, %10000001    ;70
+    .byte %01010000, %01010101, %01010101, %10010101
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %10000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000001, %01010001
-    .byte %01000000, %00000000, %00000000, %00000001    ;80
+    .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000001, %01010101, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001    ;90
     .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01010101, %01010101, %01010101, %01010101    ;98
-ENTLIST1:
-    .byte $02, $ED      ;type (see EntityType struct), $XY meta location
-    .byte $FF           ;End of list
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01010101, %01010101, %01010101, %01010101
 
-
-;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
-;--*--*--*--*--*--*--*--*--Sprite Look-up Table ROM*--*--*--*--*--*--*--*
-;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
-;Pull from these tables during "LoadNextArea" for all relevant entities in current level, then load all necessary sprite options into
-;RAM segment. May need to increase RAM page size, this is a good segment of what RAM is needed for in the game, entity properties.
-SPRITELOOKUP:   ;first square (tl) of each metatile
-    .byte $00, $02, $04, $06, $08, $FF   ;player
-    .byte $20, $FF                      ;medallion top-left (5)
-    .byte $22, $FF                      ;medallion top-right (6)
-    .byte $24, $FF                      ;medallion bottom-left (7)
-    .byte $26, $FF                      ;medallion bottom-right (8)
-    .byte $0E, $FF                      ;hat    
-;START HERE!!!
-PALETTELOOKUP:
-    .byte $00, $FF
-    .byte $01, $FF
-    .byte $01, $FF
-    .byte $01, $FF
-    .byte $01, $FF
 
 .segment "VECTORS"
     .word VBLANK

@@ -1,0 +1,6 @@
+/game-jam-stable
+/pre-title-screen-stable
+/title-screen-v1
+*.o
+*.txt
+*.png
