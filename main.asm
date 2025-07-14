@@ -163,6 +163,14 @@ CLEARMEM:
 
     LDX #$00
     LDY #$00
+
+
+INITIALIZETITLESCREEN:
+    JMP INITIALIZEMAINGAME
+    JMP GAMELOOP
+
+
+INITIALIZEMAINGAME:
 WriteAreaBankLoop:      ;Write all areas PRGROM addresses into RAM lookup table
                         ;Future optimization: if I keep a self-size byte in the AREA arrays, I can loop this and not hardcode.
     LDA #<AREA0
@@ -265,7 +273,6 @@ InitializePlayer:
     INX
     ;15 writes to ENTITIES array
     
-
 InitializeLastPiece:
     ;The only startingg entity is the last medallion piece
     LDA #EntityType::Treasure
@@ -360,8 +367,6 @@ PALETTELOAD:
     STA spritemem+1
 
     JMP GAMELOOP
-
-
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -2026,6 +2031,19 @@ PALETTE:  ;seems like background can only access last 4 palettes?
     ;TODO: potential for compressing again by half:
     ;If I have a row-ender, I don't need a Y value, so II can pack two blocks into one byte: X1{0000}X2{0000}
 
+;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
+;--*--*--*--*--*--*--*--*--Title Screen ROM--*--*--*--*--*--*--*--*--*--*--*
+;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
+;Replace with rad image.
+;Replace text with a draw text subroutine
+TITLESCREEN:    ;3 lines of text
+    .byte $48, $58, $00, $ED, $E1, $DE, $D0, $E5, $DA, $EC, $ED, $D0, $E9, $E2, $DE, $DC, $DE, $FF ;x,y,text, EOL
+    .byte $58, $70, $00, $E2, $E7, $DC, $DB, $E2, $E7, $D0, $E5, $E5, $DC, $FF
+    .byte $58, $B0, $00, $E9, $EB, $DE, $EC, $EC, $D0, $EC, $ED, $DA, $EB, $ED, $FF, $FF       ;EOL, EOF
+
+;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
+;--*--*--*--*--*--*--*--*--Game areas ROM--*--*--*--*--*--*--*--*--*--*--*
+;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
 AREA0:  ;How to traverse these memory chunks. Start with a little "table of contents"? A few bytes to load as an adder to each segment?
 SELFID0:
     .byte $00
