@@ -32,6 +32,7 @@ JOYPAD2         = $4017
 ;;;Custom registers/maps
 AREABANK        = $0440     ;192 bytes for 96 areas. Do not exceed or you will bleed into $0500!
 COLLMAPBANK     = $0500    ;one page is 256 bytes. Is this enough or do I bleed into 0600?
+TEXTBANK        = $0580
 ENTITIES        = $0600
 
 ;If I do a 2 bit coll map, each tile can have 4 properties: "not there", "solid", "climbable", "damaging"
@@ -92,7 +93,7 @@ ENTITIES        = $0600
 
 ;I had to open up the zero page in nes.cfg to range from $0002 to $00FF. Idk if that will break something later.
 .segment "ZEROPAGE"
-gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - cutscene, $05 - screen transition, $06 - PPUoff NT fill
+gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - cutscene, $05 - screen transition, $06 - PPUoff NT fill, $07 - transition to main game
 controller:         .res 1    ;reserve 1 byte for controller input
 drawcomplete:       .res 1
 scrollx:            .res 1
@@ -116,11 +117,13 @@ spritemem:          .res 2
 level:              .res .sizeof(Area)              ;6b
 nextarea:           .res .sizeof(Area)
 nextareaid:         .res 1
+ptr:                .res 2
+bgpalette:          .res 1
 btptr:              .res 2
 cmptr:              .res 2
 exitdir:            .res 1      ;1- up, 2 - down, 3 - left, 4 - right
-;ptr:                .res 2
-;total zero page reserved: 157b (max 254)
+
+;total zero page reserved: 161b (max 254)
 
 .segment "CODE"
 
@@ -144,7 +147,10 @@ RESET:
     JSR WAITFORVBLANK
 
     TXA
+    LDA #$00
+    STA gamestate
 
+;LDX #$00 before calling from wild
 CLEARMEM:
     STA $0000, x    ;zeroing out the memory ranges. X is indexing through each block. when X incs to 1, address= $0001 etc
     STA $0100, x
@@ -164,162 +170,38 @@ CLEARMEM:
     LDX #$00
     LDY #$00
 
-
 INITIALIZETITLESCREEN:
-    JMP INITIALIZEMAINGAME
-    JMP GAMELOOP
-
-
-INITIALIZEMAINGAME:
-WriteAreaBankLoop:      ;Write all areas PRGROM addresses into RAM lookup table
-                        ;Future optimization: if I keep a self-size byte in the AREA arrays, I can loop this and not hardcode.
-    LDA #<AREA0
-    STA AREABANK, x
-    INX
-    LDA #>AREA0
-    STA AREABANK, x
-    INX
-    LDA #<AREA1
-    STA AREABANK, x
-    INX
-    LDA #>AREA1
-    STA AREABANK, x
+    LDA #<TITLESCREEN
+    STA ptr           ;utilize block table pointer for text load
+    LDA #>TITLESCREEN
+    STA ptr+1
+    JSR LoadTextFromROM  ;Load Title Screen text into TEXTBANK ($0580) [THIS WORKS]
     
-    LDX #$00
-InitializeFirstScreen:
-    LDA AREABANK
-    STA level+Area::selfaddr1
-    LDA AREABANK+1
-    STA level+Area::selfaddr2
-    ;block table
-    LDA level+Area::selfaddr1 
-    CLC
-    ADC #$07
-    STA level+Area::btaddr1     ;OMG I can't believe on a certain write, this is landing dead on #$00, which is putting the ptr one page off.
-    LDA level+Area::selfaddr2
-    STA level+Area::btaddr2
-    BCS IncrementBTHightByte
-    JMP InitializeCollisionMap
-IncrementBTHightByte:
-    INC level+Area::btaddr2
-;collision map
-InitializeCollisionMap:
-    LDA level+Area::selfaddr1
-    CLC
-    ADC #$64 ;#$64
-    STA level+Area::cmaddr1
-    LDA level+Area::selfaddr2
-    STA level+Area::cmaddr2
-    BCS IncrementCMHighByte
-    JMP ContinueToInitPlayer
-IncrementCMHighByte:
-    INC level+Area::cmaddr2
-ContinueToInitPlayer:
-    LDX #$00
-InitializePlayer:
-    LDA #EntityType::PlayerType
-    STA playerdata+Entity::type
-    STA ENTITIES, x
-    INX
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
     LDA #$20
-    STA playerdata+Entity::xpos
-    STA ENTITIES, x
-    INX   
+    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
     LDA #$00
-    STA playerdata+Entity::ypos
-    STA ENTITIES, x
-    INX
-    LDA #%10100000  ;falling, facing right
-    STA playerdata+Entity::state
-    STA ENTITIES, x
-    INX
-    LDA #$00
-    STA playerdata+Entity::tlspr
-    STA ENTITIES, x
-    INX
-    LDA #$01
-    STA playerdata+Entity::trspr
-    STA ENTITIES, x
-    INX
-    LDA #$10
-    STA playerdata+Entity::blspr
-    STA ENTITIES, x
-    INX
-    LDA #$11
-    STA playerdata+Entity::brspr
-    STA ENTITIES, x
-    INX
-    LDA #$00
-    ;TODO: remove playersprite struct, included into entity struct
-    STA playerdata+Entity::tlpal
-    STA playerdata+Entity::trpal
-    STA playerdata+Entity::blpal
-    STA playerdata+Entity::brpal
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    LDA #$00        ;no env
-    STA playerdata+Entity::env
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x     ;zero out meta x
-    INX
-    STA ENTITIES, x     ;zero out meta y
-    INX
-    ;15 writes to ENTITIES array
+    STA $2006           ;PPUADDR
+
+    JSR LoadBlankNametable 
     
-InitializeLastPiece:
-    ;The only startingg entity is the last medallion piece
-    LDA #EntityType::Treasure
-    STA ENTITIES, x
-    INX
-    LDA #$E0    ;xpos
-    STA ENTITIES, x
-    INX
-    LDA #$D0    ;ypos
-    STA ENTITIES, x
-    INX
-    LDA #$80    ;state
-    STA ENTITIES, x
-    INX
-    LDA #$26    ;tl sprite
-    STA ENTITIES, x
-    INX
-    LDA #$27    ;tr sprite
-    STA ENTITIES, x
-    INX
-    LDA #$36    ;bl prite
-    STA ENTITIES, x
-    INX
-    LDA #$37    ;br sprite
-    STA ENTITIES, x
-    INX
-    LDA #$01    ;palette
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x
-    INX
-    STA ENTITIES, x ;env
-    INX
-    STA ENTITIES, x ;metax  -deprecate out to a zero page variable for player?
-    INX
-    STA ENTITIES, x ;metay
-    INX
-    LDA #$FF
-    STA ENTITIES, x
-    INX
-    ;LDA #$0A ;player plus medallion pieces
-    ;STA totalsprites
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$28
+    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
+    LDA #$00
+    STA $2006           ;PPUADDR
+    JSR LoadBlankNametable
+    LDA #$23
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+    LDA #%01010101
+    STA bgpalette
+    JSR LoadAttributes
+    JSR DrawText
+
 ;Clear register and set palette address
+INITPALETTE:
     LDA $2002
     LDA #$3F
     STA $2006
@@ -334,6 +216,11 @@ PALETTELOAD:
     CPX #$20
     BNE PALETTELOAD
 
+
+    ;LDA #$0A ;player plus medallion pieces
+    ;STA totalsprites
+;Placegholder hardcode to get to title screen
+
 ;;;;;;;;;;;;;;;;;;;;;;;;
 
     LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
@@ -341,19 +228,11 @@ PALETTELOAD:
     STA $2006           ;PPUADDR      we are using $2000 for graphics memory
     LDA #$00
     STA $2006           ;PPUADDR
+    LDA gamestate
+    CMP #$00
+    BEQ FINISHINIT 
 
-    LDA level+Area::btaddr1
-    STA btptr
-    LDA level+Area::btaddr2
-    STA btptr+1
-    LDA level+Area::cmaddr1
-    STA cmptr
-    LDA level+Area::cmaddr2
-    STA cmptr+1
-    JSR LoadNametable
-    JSR LoadAttributes
-    JSR LoadCollMap
-
+FINISHINIT:
     JSR WAITFORVBLANK
 
     LDA #%10000000
@@ -500,6 +379,17 @@ donecheckingdirectional:
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 checkbuttons:
+checkstart:
+    LDA controller
+    AND #$10
+    BEQ checka
+    LDA gamestate
+    CMP #$00
+    BNE checka  ;eventually put PAUSE function here
+    LDA #$07
+    STA gamestate   ;if on title screen, change state to main game.
+    ;JMP CLEARMEM
+    JMP waitfordrawtocomplete
 checka:
     LDA controller
     AND #$80
@@ -516,8 +406,11 @@ checkarelease:
     ;JMP playerjump
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-finishcontrols:
-
+finishcontrols: ;if on title screen, skip game logic
+    LDA gamestate
+    CMP #$00
+    BNE processcrolling
+    JMP waitfordrawtocomplete
 
 processcrolling:
     ;LDA scrolly
@@ -680,21 +573,19 @@ waitfordrawtocomplete:
     BNE waitfordrawtocomplete
     LDA #$00
     STA drawcomplete
-
+    LDA gamestate ;-check if transitioning from title screen
+    CMP #$07
+    BNE GoToGAMELOOP
+    LDA #$01
+    STA gamestate
+    JSR InitializeMainGame
+GoToGAMELOOP:
     JMP GAMELOOP
 
 
 ;When switching screens, get out of game loop entirely and use SCREENTRANLOOP
 ;Both PPU nametables should be loaded up by using the TransitionScreen BG loading subroutine
 SCREENTRANLOOP:
-    NOP
-    NOP
-    NOP
-    NOP
-    NOP
-    NOP
-    NOP
-
     NOP
     NOP
 InitSpritesST:
@@ -764,7 +655,42 @@ waitfordrawtocompleteST:
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+;;;--------------------------------------------------------------------------------------------;;;
+;;;=-------------------------------------------------------------------------------------------;;;
 ;;;;; ----- Logical subroutines ------ ;;;;;;
+;;;--------------------------------------------------------------------------------------------;;;
+;;;--------------------------------------------------------------------------------------------;;;
+
+
+;;;----------------------------------Collision Detection subroutines--------------------------;;;
 CheckPlayerCollisionDown: ;IN <--- direction of check (Y)
     PHA
     TXA
@@ -1186,7 +1112,19 @@ ChangePlayerFacing: ;push A and Y, doesn't use
     RTS
 
 
+
+
+
+
+
+
+
+;;;RAM loading subroutines
+
+
+;;;--------------------------------------------------------------------------------------;;;
 ;--*--*--*--*--*--*--*--*--* STORE ENTITIES SUBROUTINE   *--*--*--*--*--*--*--*--*--*--*--
+;;;--------------------------------------------------------------------------------------;;;
 StoreEntity: ;full subroutine, checkvar = #$00
     PHA
     TXA
@@ -1261,9 +1199,247 @@ WriteEntityFromBuffer: ;can this loop with y?   Call this is a subroutine to upd
 ReturnFromStoreEntity:
     RTS
 
+;;;--------------------Load Text From ROM--------------------------------;;;
+;;;---Use to load prewritten text like title screen or any story text----;;;
+;;;---Destination: TEXTBANK = $0580--------------------------------------;;;
+;;;---IN: ptr variable with address of desired text block----------------;;;
+LoadTextFromROM:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+    LDX #$00
+    LDY #$00
+FindEndOfBankLoop:
+    LDA TEXTBANK, x
+    CMP #$00
+    BEQ LoadTextLoop
+    INX
+    JMP FindEndOfBankLoop
+LoadTextLoop:
+    LDA (ptr), y
+    CMP #$FF        ;$FF is end of file. We want to copy in all these markers but stop at end of file.
+    BEQ ReturnFromLoadTextFromROM
+    STA TEXTBANK, x
+    INY
+    INX
+    JMP LoadTextLoop
+ReturnFromLoadTextFromROM:
+    STA TEXTBANK, x
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA    
+    RTS
 
 
+;;;----------------------------------------------------------------------------------------------;;;
 ;-------------------Load Screen Subroutines----------------------------------------------------------
+;;;----------------------------------------------------------------------------------------------;;;
+
+InitializeMainGame:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+    LDX #$00
+    LDY #$00
+    LDA $2000
+    AND #%01111111
+    STA $2000
+    LDA #$00
+    STA $2001
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$20
+    STA $2006           ;PPUADDR      $2000 for nametable1
+    LDA #$00
+    STA $2006           ;PPUADDR
+WriteAreaBankLoop:      ;Write all areas PRGROM addresses into RAM lookup table
+                        ;Future optimization: if I keep a self-size byte in the AREA arrays, I can loop this and not hardcode.
+    LDA #<AREA0
+    STA AREABANK, x
+    INX
+    LDA #>AREA0
+    STA AREABANK, x
+    INX
+    LDA #<AREA1
+    STA AREABANK, x
+    INX
+    LDA #>AREA1
+    STA AREABANK, x
+    
+    LDX #$00
+InitializeFirstScreen:
+    LDA AREABANK                ;set AREA0 as current level
+    STA level+Area::selfaddr1
+    LDA AREABANK+1
+    STA level+Area::selfaddr2
+    ;block table
+    LDA level+Area::selfaddr1 
+    CLC
+    ADC #$07
+    STA level+Area::btaddr1     ;OMG I can't believe on a certain write, this is landing dead on #$00, which is putting the ptr one page off.
+    LDA level+Area::selfaddr2
+    STA level+Area::btaddr2
+    BCS IncrementBTHightByte
+    JMP InitializeCollisionMap
+IncrementBTHightByte:
+    INC level+Area::btaddr2
+;collision map
+InitializeCollisionMap:
+    LDA level+Area::selfaddr1
+    CLC
+    ADC #$64 ;#$64
+    STA level+Area::cmaddr1
+    LDA level+Area::selfaddr2
+    STA level+Area::cmaddr2
+    BCS IncrementCMHighByte
+    JMP ContinueToInitPlayer
+IncrementCMHighByte:
+    INC level+Area::cmaddr2
+ContinueToInitPlayer:
+    LDX #$00
+InitializePlayer:
+    LDA #EntityType::PlayerType
+    STA playerdata+Entity::type
+    STA ENTITIES, x
+    INX
+    LDA #$20
+    STA playerdata+Entity::xpos
+    STA ENTITIES, x
+    INX   
+    LDA #$00
+    STA playerdata+Entity::ypos
+    STA ENTITIES, x
+    INX
+    LDA #%10100000  ;falling, facing right
+    STA playerdata+Entity::state
+    STA ENTITIES, x
+    INX
+    LDA #$00
+    STA playerdata+Entity::tlspr
+    STA ENTITIES, x
+    INX
+    LDA #$01
+    STA playerdata+Entity::trspr
+    STA ENTITIES, x
+    INX
+    LDA #$10
+    STA playerdata+Entity::blspr
+    STA ENTITIES, x
+    INX
+    LDA #$11
+    STA playerdata+Entity::brspr
+    STA ENTITIES, x
+    INX
+    LDA #$00
+    ;TODO: remove playersprite struct, included into entity struct
+    STA playerdata+Entity::tlpal
+    STA playerdata+Entity::trpal
+    STA playerdata+Entity::blpal
+    STA playerdata+Entity::brpal
+    STA ENTITIES, x
+    INX
+    STA ENTITIES, x
+    INX
+    STA ENTITIES, x
+    INX
+    STA ENTITIES, x
+    INX
+    LDA #$00        ;no env
+    STA playerdata+Entity::env
+    STA ENTITIES, x
+    INX
+    STA ENTITIES, x     ;zero out meta x
+    INX
+    STA ENTITIES, x     ;zero out meta y
+    INX
+    ;15 writes to ENTITIES array
+;InitializeLastPiece:
+    ;The only startingg entity is the last medallion piece
+;    LDA #EntityType::Treasure
+;    STA ENTITIES, x
+;    INX
+;    LDA #$E0    ;xpos
+;    STA ENTITIES, x
+;    INX
+;    LDA #$D0    ;ypos
+;    STA ENTITIES, x
+;    INX
+;    LDA #$80    ;state
+;    STA ENTITIES, x
+;    INX
+;    LDA #$26    ;tl sprite
+;    STA ENTITIES, x
+;    INX
+;    LDA #$27    ;tr sprite
+;    STA ENTITIES, x
+;    INX
+;    LDA #$36    ;bl prite
+;    STA ENTITIES, x
+;    INX
+;    LDA #$37    ;br sprite
+;    STA ENTITIES, x
+;    INX
+;    LDA #$01    ;palette
+;    STA ENTITIES, x
+;    INX
+;    STA ENTITIES, x
+;    INX
+;    STA ENTITIES, x
+;    INX
+;    STA ENTITIES, x
+;    INX
+;    STA ENTITIES, x ;env
+;    INX
+;    STA ENTITIES, x ;metax  -deprecate out to a zero page variable for player?
+;    INX
+;    STA ENTITIES, x ;metay
+;    INX
+    LDA #$FF
+    STA ENTITIES, x
+    INX
+
+;;----->>>>
+    LDA level+Area::btaddr1
+    STA btptr
+    LDA level+Area::btaddr2
+    STA btptr+1
+    LDA level+Area::cmaddr1
+    STA cmptr
+    LDA level+Area::cmaddr2
+    STA cmptr+1
+    JSR LoadNametable
+    LDA #$23
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+    LDA #$00
+    STA bgpalette
+    JSR LoadAttributes
+    JSR LoadCollMap
+
+    LDA #$1E
+    STA $2001
+    LDA $2000
+    ORA #%10000000
+    STA $2000
+
+    LDA #$00
+    STA spritemem
+    LDA #$02
+    STA spritemem+1
+
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA    
+    RTS
+
 
 SetupNextArea:
     PHA
@@ -1316,12 +1492,37 @@ NAReturn:
     PLA
     RTS
 
+
 ;Background Draw methods
 ;Upon game state changing to transition, we need to fill both nametables in $2007 then scroll between them. We'll receive the BLOCKTABLE
 ;COLLMAP for the new screen and hold them in a pointer somewhere, or a reference variable for a pointer. Then LoadTransition can fill both
 ;nametables in PPU memory and increment the correct scroll, h or v (First I'm only messing around with v). The idea is to get a Zelda-like
 ;screen transition.
 ;LoadNametable loads one name table (not both). Need to make a way to call for "level" then "nextarea" when transitioning screens
+
+LoadBlankNametable:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    LDA #$08
+    LDX #$04
+    LDY #$00
+BlankNTLoop:
+    STA $2007
+    INY
+    BNE BlankNTLoop
+    DEX
+    BNE BlankNTLoop
+FinishedBlankWrite:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
 
 LoadNametable:
     PHA
@@ -1645,6 +1846,8 @@ FinishedBGWrite:
     PLA
     RTS
 ;----------------------------------------------------------------------------------------
+
+;Set attribute register to $2006 BEFORE calling!!!
 LoadAttributes:
     PHA
     TXA
@@ -1652,13 +1855,14 @@ LoadAttributes:
     TYA
     PHA
 
-    LDA $2002       ;reset latch
-    LDA #$23        ;High byte of $23CO address (attributes)
-    STA $2006
-    LDA #$C0        ;Low byte
-    STA $2006
+    ;LDA $2002       ;reset latch
+    ;LDA #$23        ;High byte of $23CO address (attributes)
+    ;STA $2006
+    ;LDA #$C0        ;Low byte
+    ;STA $2006
     LDX #$40        ;Fill with 64b
-    LDA #$00        ;Attribute value
+    ;LDA #$00        ;Attribute value
+    LDA bgpalette
 LoadAttributesLoop:
     STA $2007
     DEX
@@ -1671,7 +1875,7 @@ ReturnFromLoadAttributes:
     PLA
     RTS
 
-;--*--*--*--*--*--*--*Load COllision Map subroutine*--*--*--*--*--*--*--*--*--*
+;--*--*--*--*--*--*--*Load Collision Map subroutine*--*--*--*--*--*--*--*--*--*
 LoadCollMap:
     PHA
     TXA
@@ -1734,7 +1938,15 @@ FillNametables:
     STA $2006           ;PPUADDR      nametable1 attribute layer
     LDA #$C0
     STA $2006           ;PPUADDR
+    LDA #$00
+    STA bgpalette
     JSR LoadAttributes  
+    LDA #$2B
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+    LDA #$00
+    STA bgpalette
     JSR LoadAttributes ;currently not changing anything about the attributes
 FillCollMap:
     ;LDA level+Area::cmaddr1
@@ -1762,7 +1974,65 @@ ReturnFromLoadNextArea:
     PLA
     RTS
 
+;;;------------------------Draw Text ---------------------------------------;;;
+
+DrawText:   ;my my, can't use sprites. Gotta use BG Tiles. Write to specific addresses in $2000
+;TODO: I should move this back out of VBLANK later too
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    LDX #$00    ;bank iterator
+GetLineFeatures:
+    LDA $2002
+    LDA TEXTBANK, x
+    CLC
+    ADC #$20
+    STA $2006
+    INX
+    LDA TEXTBANK, x
+    STA $2006
+DrawTextLoop:
+    LDA TEXTBANK, x     ;sprite address
+    CMP #$FE
+    BEQ NewLine
+    STA $2007
+    INX
+    JMP DrawTextLoop
+NewLine:
+    INX
+    LDA TEXTBANK, x
+    CMP #$FF
+    BNE GetLineFeatures    ;As game text becomes more robust, I need to add a branch here for the next "set" of text instead of ending.
+DoneDrawingText:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+;-------------------------------------------------------------------------------------------------;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    NMI / VBLANK    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;-------------------------------------------------------------------------------------------------;
 VBLANK:
     PHA ;push registers - A, P, X, Y
     PHP
@@ -1780,9 +2050,13 @@ VBLANK:
     LDA #$02        ;high byte of graphics page $0200
     STA spritemem+1
 
-DRAWENTITIES:   
+DRAWENTITIES:
 BeginLoadEntityLoop:
     LDX #$00
+    LDA ENTITIES, x      ;check if there are no sprites at all
+    CMP #$00
+    BNE LoadEntityLoop
+    JMP DONESPRITE
 LoadEntityLoop:
     INX ;go past type
     LDA ENTITIES, x     ;xpos
@@ -1972,15 +2246,17 @@ CHECKENDSPRITE:
     CMP #$FF
     BEQ DONESPRITE
     JMP LoadEntityLoop
-
 DONESPRITE:
+
+
 ;DMA copy sprites
     LDA #$00
     STA $2003 ;reset counter
     LDA #$02    ;set memory to 0x200 range
     STA $4014   ;OAMDMA byte - This action shoves everything we wrote to $0200 with the registerss into the PPU via OAMDMA
     NOP         ;pause for sync
-
+    NOP
+    NOP
     LDA #$00    ;clear register
     STA $2006
     STA $2006   ;$2006 takes a double write PPUDATA
@@ -2024,7 +2300,7 @@ PALETTE:  ;seems like background can only access last 4 palettes?
 
     ;bg palettes
     .byte $0F, $06, $15, $18 ;palette 1  ;browns, golds, reds, bg1
-    .byte $0E, $06, $15, $36 ;palette 2   ;crimson, red, pink    bullet/enemy
+    .byte $0E, $27, $2A, $07 ;palette 2   ;crimson, red, pink    bullet/enemy
     .byte $0E, $07, $1C, $37 ;palette 3  ;browns and blue - main char
     .byte $0E, $13, $23, $33 ;palette 4   ;purples
     
@@ -2036,10 +2312,11 @@ PALETTE:  ;seems like background can only access last 4 palettes?
 ;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
 ;Replace with rad image.
 ;Replace text with a draw text subroutine
+;$2007 is written to sequentially, $2000-$23C0, then $2800-2BC0, then mirrored to the other two quadrants.
 TITLESCREEN:    ;3 lines of text
-    .byte $48, $58, $00, $ED, $E1, $DE, $D0, $E5, $DA, $EC, $ED, $D0, $E9, $E2, $DE, $DC, $DE, $FF ;x,y,text, EOL
-    .byte $58, $70, $00, $E2, $E7, $DC, $DB, $E2, $E7, $D0, $E5, $E5, $DC, $FF
-    .byte $58, $B0, $00, $E9, $EB, $DE, $EC, $EC, $D0, $EC, $ED, $DA, $EB, $ED, $FF, $FF       ;EOL, EOF
+    .byte $01, $08, $ED, $E1, $DE, $D0, $E5, $DA, $EC, $ED, $D0, $E9, $E2, $DE, $DC, $DE, $FE ;Sector (0-3),Offset (00-FF, or BF),text, EOL
+    .byte $02, $48, $DB, $F2, $D0, $E6, $E2, $ED, $EC, $EE, $DD, $DA, $D4, $E9, $EB, $DE, $EC, $FE
+    .byte $02, $8A, $E9, $EB, $DE, $EC, $EC, $D0, $EC, $ED, $DA, $EB, $ED, $FE, $FF       ;EOL, EOF
 
 ;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
 ;--*--*--*--*--*--*--*--*--Game areas ROM--*--*--*--*--*--*--*--*--*--*--*
