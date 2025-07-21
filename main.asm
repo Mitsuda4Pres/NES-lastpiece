@@ -43,7 +43,7 @@ ENTITIES        = $0600
     Snake = 3       ;will likely have a type number for each enemy type
 .endscope
 
-.struct Entity          ;15b
+.struct Entity          ;12b
     type        .byte
     xpos        .byte
     ypos        .byte
@@ -53,18 +53,15 @@ ENTITIES        = $0600
     ;0         0               0     0       0     0    0     0 -
     ;States for Treasure: 0 - untouched, 1 - retrieved
     ;States for Enemy: go by 2s and alternate for animation
-    ;faceright faceleft       dead  hurt   sec2  sec1  walk2 walk1
+    ;faceright faceleft                    dead   hurt  attack walk
     ;0         0               0     0       0     0    0     0 
 
     ;0 - alive/default action(walk, etc.), 2 - attack/secondary action, 4 - dead
+    pal         .byte ;likely can reduce these to one palette byte, then one byte with bit flags for each quadrant for flips h and v
     tlspr       .byte
     trspr       .byte
     blspr       .byte
     brspr       .byte
-    tlpal       .byte ;likely can reduce these to one palette byte, then one byte with bit flags for each quadrant for flips h and v
-    trpal       .byte
-    blpal       .byte
-    brpal       .byte
     env         .byte   ;$00 - nothing, $01 - climbable
     metax       .byte
     metay       .byte
@@ -113,9 +110,9 @@ colltemp2:          .res 1
 colltemp3:          .res 1
 animaframes:        .res 1
 totalsprites:       .res 1
-playerdata:         .res .sizeof(Entity)            ;15b
+playerdata:         .res .sizeof(Entity)            ;12b
 metatile:           .res .sizeof(Metatile)          ;8b
-entitybuffer:       .res .sizeof(Entity)            ;15b
+entitybuffer:       .res .sizeof(Entity)            ;12b
 blockrow:           .res 16
 spritemem:          .res 2
 level:              .res .sizeof(Area)              ;8b
@@ -430,6 +427,15 @@ finishcontrols: ;if on title screen, skip game logic
     JMP waitfordrawtocomplete
 
 processplayer:
+;Check collisions first, then write updates. SHould prevent ledge hiccup.
+;ledge hiccup problem is somewhere in collision code. Way down on pritority list.
+;Check collisions before or after processing enemy movements???
+CheckCollisions:;check for collisions from new position
+    JSR CheckPlayerCollisionDown    ;check downward collision every frame
+    JSR CheckPlayerCollisionLeft
+    JSR CheckPlayerCollisionRight
+    JSR CheckPlayerCollisionOver
+
 FindMetaPosition:
     LDA playerdata+Entity::xpos
     LSR
@@ -567,17 +573,10 @@ CopyPDtoEBLoop:
     STA checkvar    ;set checkvar to 1 so subroutine does not mess with stack
     JSR WriteEntityFromBuffer ;Subroutine to write all the changes made to player this frame
 
-;Check collisions before or after processing enemy movements???
-CheckCollisions:;check for collisions from new position
-    JSR CheckPlayerCollisionDown    ;check downward collision every frame
-    JSR CheckPlayerCollisionLeft
-    JSR CheckPlayerCollisionRight
-    JSR CheckPlayerCollisionOver
-
     JMP waitfordrawtocomplete   ;DEBUG line, comment out when ready to test enemy processes.
 
 
-    LDX #$10    ;start after player entry
+    LDX #$0C    ;start after player entry
 ProcessEnemiesLoop: ;state is byte 4 of the ENTITIES entry. Process directly to RAM location.
     LDA ENTITIES, x
     CMP #$FF
@@ -595,12 +594,29 @@ CheckSnake:
     INX ;state
     LDA ENTITIES, x
     LSR
-    BCS SnakeWalkProcess
-    LSR
-    BCS SnakeWalkProcess    ;If either of the low two bits are set, Process walk
-
-    JMP NextEnemyType
+    BCS SnakeWalkProcess    ;If low bit is set, Process walk
+        ;---Reload state to perform other logic---
+    JMP MoveToNextEntity
 SnakeWalkProcess:
+;increment selftimer (+B)
+    TXA
+    PHA
+    CLC
+    ADC #$0B
+    TAX             ;this might be more cycles than INXx8, but it looks nicer :)
+    INC ENTITIES, x ;increment selftimer
+    LDA ENTITIES, x
+    ASL
+    ASL
+    ASL
+    BCS SnakeMove
+    PLA
+    INX
+    INX
+    JMP NextEnemyType
+SnakeMove:
+    PLA
+    TAX
     LDA ENTITIES, x ;reload state
     ASL
     BCS SnakeMoveRight
@@ -610,16 +626,21 @@ SnakeMoveLeft:
     DEC ENTITIES, x
     JMP SnakeChangeFrame
 SnakeMoveRight:
-    ;START HERE 7/18
+    DEX
+    DEX
+    INC ENTITIES, x
 SnakeChangeFrame:
-
-
-NextEnemyType:
+    INX
+    INX
+    LDA ENTITIES, x
+    EOR %00000011
+    STA ENTITIES, x
 MoveToNextEntity:
     TXA
     CLC
-    ADC #$0C    ;+12 positions
+    ADC #$09    ;+9 positions
     TAX
+NextEnemyType:
     JMP ProcessEnemiesLoop
 
 EndProcessEnemiesLoop:
@@ -682,7 +703,7 @@ CopyPDtoEBLoopST:
     STA entitybuffer, x
     INX
     INY
-    CPY #$0F    ;15 items in entity struct
+    CPY #$0C    ;12 items in entity struct
     BNE CopyPDtoEBLoopST
     LDX #$01    ;X = ENTITIES index of player + 1
     LDA #$01
@@ -1158,18 +1179,10 @@ ChangePlayerFacing: ;push A and Y, doesn't use
     STA playerdata+Entity::blspr
     TYA
     STA playerdata+Entity::brspr
-    LDA playerdata+Entity::tlpal
+    LDA playerdata+Entity::pal
     EOR #$04
-    STA playerdata+Entity::tlpal
-    LDA playerdata+Entity::trpal
-    EOR #$04
-    STA playerdata+Entity::trpal
-    LDA playerdata+Entity::blpal
-    EOR #$04
-    STA playerdata+Entity::blpal
-    LDA playerdata+Entity::brpal
-    EOR #$04
-    STA playerdata+Entity::brpal
+    STA playerdata+Entity::pal
+    
     PLA
     TAY
     PLA
@@ -1218,7 +1231,7 @@ WriteEntityFromBuffer: ;can this loop with y?   Call this is a subroutine to upd
     LDA entitybuffer+Entity::state
     STA ENTITIES, x
     INX
-    LDA entitybuffer+Entity::tlpal
+    LDA entitybuffer+Entity::pal
     STA ENTITIES, x
     INX
 
@@ -1235,15 +1248,15 @@ WriteEntityFromBuffer: ;can this loop with y?   Call this is a subroutine to upd
     STA ENTITIES, x
     INX
 
-    LDA entitybuffer+Entity::trpal
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::blpal
-    STA ENTITIES, x
-    INX
-    LDA entitybuffer+Entity::brpal
-    STA ENTITIES, x
-    INX
+    ;LDA entitybuffer+Entity::trpal
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA entitybuffer+Entity::blpal
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA entitybuffer+Entity::brpal
+    ;STA ENTITIES, x
+    ;INX
     LDA entitybuffer+Entity::env
     STA ENTITIES, x
     INX
@@ -1399,10 +1412,7 @@ InitializePlayer:
     STA ENTITIES, x ;state
     INX
     LDA #$00
-    STA playerdata+Entity::tlpal
-    STA playerdata+Entity::trpal
-    STA playerdata+Entity::blpal
-    STA playerdata+Entity::brpal
+    STA playerdata+Entity::pal
     STA ENTITIES, x ;palette
     INX
     LDA #$00
@@ -1421,22 +1431,22 @@ InitializePlayer:
     STA playerdata+Entity::brspr
     STA ENTITIES, x
     INX
-    LDA #$00
-    STA playerdata+Entity::tlspr
-    STA ENTITIES, x ;sprite 2, head doesn't change
-    INX
-    LDA #$01
-    STA playerdata+Entity::trspr
-    STA ENTITIES, x
-    INX
-    LDA #$12
-    STA playerdata+Entity::blspr
-    STA ENTITIES, x
-    INX
-    LDA #$13
-    STA playerdata+Entity::brspr
-    STA ENTITIES, x
-    INX
+    ;LDA #$00
+    ;STA playerdata+Entity::tlspr
+    ;STA ENTITIES, x ;sprite 2, head doesn't change
+    ;INX
+    ;LDA #$01
+    ;STA playerdata+Entity::trspr
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA #$12
+    ;STA playerdata+Entity::blspr
+    ;STA ENTITIES, x
+    ;INX
+    ;LDA #$13
+    ;STA playerdata+Entity::brspr
+    ;STA ENTITIES, x
+    ;INX
     LDA #$00        ;no env
     STA playerdata+Entity::env
     STA ENTITIES, x
@@ -1509,9 +1519,9 @@ LoadEntitiesFromROM:
     NOP
     NOP
     NOP
-;For right now, start from just after player, which is +16.
+;For right now, start from just after player, which is +12.
 ;The only entity to persist between screens will be the player.
-    LDX #$10
+    LDX #$0C
     LDY #$00
     TYA
     PHA         ;keep original iterator on stack
@@ -1561,71 +1571,88 @@ StartLoadEntities:
     ASL             ;move y-val into high byte, shifts out x-val
     STA ENTITIES, x ;store y 3
     INX
-    LDA #$00
+    LDA #$41
     STA ENTITIES, x ;store state 4
     INX
     INY
     LDA (ptr2), y   ;palette
     STA ENTITIES, x ;store pal 5
     INX
+    INY             ;go past number of frames
+    INY             ;grab first frame
+    LDA (ptr2), y   ;tlspr 6
+    STA ENTITIES, x
+    INX
     INY
-    LDA (ptr2), y   ;number of animation frames that are stored. The ENTITIES bank is only setup to hold 2 frames at a time.
+    LDA (ptr2), y   ;trspr 7
+    STA ENTITIES, x
+    INX
+    INY
+    LDA (ptr2), y   ;blspr 8
+    STA ENTITIES, x
+    INX
+    INY
+    LDA (ptr2), y   ;brspr 9
+    STA ENTITIES, x
+    INX
+    INY
+    ;LDA (ptr2), y   ;number of animation frames that are stored. The ENTITIES bank is only setup to hold 2 frames at a time.
                     ;when loading the entity for the first time, we will always grab the first two frames
-    CMP #$01
-    BEQ LoadSingleSprite
-LoadTwoSprites:
-    LDA #$08
-    STA counter
-    INY             ;INC to first sprite ID
-TwoSpriteLoop:
-    LDA (ptr2), y   ;get all 8 sprite tiles
-    STA ENTITIES, x ;(8)
-    INX
-    INY
-    DEC counter
-    LDA counter
-    CMP #$00
-    BNE TwoSpriteLoop
-    JMP EndSpriteLoop
-LoadSingleSprite:
-    LDA #$01        ;if ENTITIES space for sprites expands (unlikely), simply increase this number
-    PHA             ;Need to run two loops of four, so keep another iterator on the stack
-    LDA #$04
-    STA counter
-    INY             ;INC to first sprite ID
-SingleSpriteLoop:
-    LDA (ptr2), y
-    STA ENTITIES, x ;(4 + 4)
-    INX
-    INY
-    DEC counter
-    LDA counter
-    CMP #$00
-    BNE SingleSpriteLoop
-ReloadSingleSpriteLoop:
-    PLA
-    CMP #$00
-    BEQ EndSpriteLoop
-    SEC
-    SBC #$01
-    PHA
-    LDA #$04
-    STA counter
-    DEY
-    DEY
-    DEY
-    DEY             ;run Y back to first sprite tile
-    JMP SingleSpriteLoop
-EndSpriteLoop:
-SetEnv:
+    ;CMP #$01
+    ;BEQ LoadSingleSprite
+;LoadTwoSprites:
+;    LDA #$08
+;    STA counter
+;    INY             ;INC to first sprite ID
+;TwoSpriteLoop:
+;    LDA (ptr2), y   ;get all 8 sprite tiles
+;    STA ENTITIES, x ;(8)
+;    INX
+;    INY
+;    DEC counter
+;    LDA counter
+;    CMP #$00
+;    BNE TwoSpriteLoop
+;    JMP EndSpriteLoop
+;LoadSingleSprite:
+;    LDA #$01        ;if ENTITIES space for sprites expands (unlikely), simply increase this number
+;    PHA             ;Need to run two loops of four, so keep another iterator on the stack
+;    LDA #$04
+;    STA counter
+;    INY             ;INC to first sprite ID
+;SingleSpriteLoop:
+;    LDA (ptr2), y
+;    STA ENTITIES, x ;(4 + 4)
+;    INX
+;    INY
+;    DEC counter
+;    LDA counter
+;    CMP #$00
+;    BNE SingleSpriteLoop
+;ReloadSingleSpriteLoop:
+;    PLA
+;    CMP #$00
+;    BEQ EndSpriteLoop
+;    SEC
+;    SBC #$01
+;    PHA
+;    LDA #$04
+;    STA counter
+;    DEY
+;    DEY
+;    DEY
+;    DEY             ;run Y back to first sprite tile
+;    JMP SingleSpriteLoop
+;EndSpriteLoop:
+SetFrameCounter:
     LDA #$00
-    STA ENTITIES, x ;14
+    STA ENTITIES, x ;10
     INX
-SetMetaX:
-    STA ENTITIES, x ;15
+SetSelfTimer:
+    STA ENTITIES, x ;11
     INX
-SetMetaY:
-    STA ENTITIES, x   ;set to zero for now 16
+SetVariable:
+    STA ENTITIES, x   ;set to zero for now 12
     INX
     PLA
     TAY
@@ -1697,7 +1724,7 @@ NAContinueToLoadENT:
     CLC
     ADC nextarea+Area::entaddr1
     STA nextarea+Area::entaddr1
-    LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
+    LDA nextarea+Area::selfaddr2        
     STA nextarea+Area::entaddr2
     BCS NAIncrementHighByteENT
     JMP NAReturn
@@ -2176,7 +2203,7 @@ FillCollMap:
     LDA nextarea+Area::cmaddr2
     STA cmptr+1
     JSR LoadCollMap
-    LDX #$10        ;entry after player data
+    LDX #$0C        ;entry after player data
 ClearEntitiesLoop:
     LDA ENTITIES, x
     CMP #$FF
@@ -2186,7 +2213,7 @@ ClearEntitiesLoop:
     INX
     JMP ClearEntitiesLoop
 EndClearEntitiesLoop:
-    LDX #$10
+    LDX #$0C
     LDA #$FF
     STA ENTITIES, x
 
@@ -2302,7 +2329,8 @@ LoadEntityLoop:
     LDA ENTITIES, x     ;palette
     STA metatile+Metatile::pal
 ;What conditional for alternating frames?
-DrawFrameOne:
+;Frame will be set before draw routine and sent in
+LoadSprite:
     INX
     LDA ENTITIES, x     ;tlspr
     STA metatile+Metatile::spritetl
@@ -2315,30 +2343,7 @@ DrawFrameOne:
     INX
     LDA ENTITIES, x     ;brspr
     STA metatile+Metatile::spritebr
-    INX                 ;s2
-    INX                 ;s2
-    INX                 ;s2
-    INX                 ;s2
-    JMP EndSpriteLoad
-DrawFrameTwo:
-    INX                 ;s1
-    INX                 ;s1
-    INX                 ;s1
-    INX                 ;s1
-    INX
-    LDA ENTITIES, x     ;tlspr
-    STA metatile+Metatile::spritetl
-    INX
-    LDA ENTITIES, x     ;trspr
-    STA metatile+Metatile::spritetr
-    INX
-    LDA ENTITIES, x     ;blspr
-    STA metatile+Metatile::spritebl
-    INX
-    LDA ENTITIES, x     ;brspr
-    STA metatile+Metatile::spritebr
-    JMP EndSpriteLoad
-EndSpriteLoad:
+EndLoadSprite:
     INX                 ;env
     INX                 ;metax
     INX                 ;metay
