@@ -14,9 +14,8 @@
 
 ;Can define game constants here, such as a global structure or variables
 ;Game Constants (make sure to use #CONSTANT when calling for value, not address)
-GRAVITY         = $01
-JUMPFORCE       = $0C
-
+GRAVITY         = $02
+JUMPFORCE       = $18
 
 ;;; PPU registers.
 PPUCTRL         = $2000
@@ -483,6 +482,7 @@ PlayerAscend:
     TAX
     CLC
     LSR
+    LSR
     STA playerdata+Entity::velocity
     LDA playerdata+Entity::ypos
     SEC
@@ -501,7 +501,8 @@ PlayerDescend:
     CLC
     ADC #$01        ;add 1
     CLC
-    LSR             ;divide by 2
+    LSR             ;divide by 4
+    LSR
     STA playerdata+Entity::velocity
     LDA playerdata+Entity::ypos
     CLC
@@ -619,13 +620,106 @@ PlayerIdle:
     STA playerdata+Entity::brspr
 
 CheckCollisions:;check for collisions from new position
+    LDA #$00
+    STA collreturnval
     JSR CheckPlayerCollisionDown    ;check downward collision every frame
     JSR CheckPlayerCollisionUp    ;check upward collision every frame
     JSR CheckPlayerCollisionLeft
-    JSR CheckPlayerCollisionRight
+    JSR CheckPlayerCollisionRight  
+ProcessCollisions:                  ;get return values from all collisions and process
+    LDA collreturnval   ;00 nothing, 01 solid, 10 climbable, 11 damage!
+ProcessDown:
+    LDA collreturnval
+    AND #%00110000
+    CMP #%00100000      ;Climbable
+    BEQ HandleClimbableDown
+    CMP #%00010000      ;solid
+    BEQ HandleSolidDown
+    JMP HandleNothingDown
+HandleClimbableDown:
+    LDA playerdata+Entity::state
+    AND #%00010000
+    CMP #%00010000
+    BEQ KeepClimbingDown
+    JMP HandleNothingDown
+KeepClimbingDown:
+    LDA playerdata+Entity::state
+    AND #%11011000      ;turn off fall, jump, walk, stand
+    JMP ProcessUp
+HandleSolidDown:
+    LDA playerdata+Entity::state
+    AND #%11001011  ;turn off fall, climb, and jump
+    ORA #%00000001  ;turn on stand
+    STA playerdata+Entity::state
+    LDA playerdata+Entity::ypos
+    AND #%11110000
+    STA playerdata+Entity::ypos
+    JMP ProcessUp
+HandleNothingDown:
+    LDA playerdata+Entity::state
+    AND #%11101100      ;turn off climb, jump, stand
+    ORA #%00100000      ;turn on falling
+    STA playerdata+Entity::state
+ProcessUp:
+    LDA collreturnval
+    AND #%11000000
+    CMP #%10000000      ;exit
+    BEQ HandleClimbableUp
+    CMP #%01000000      ;solid
+    BEQ HandleSolidUp
+    JMP ProcessLeft
+HandleClimbableUp:
+    ;no up exits yet
+    JMP ProcessLeft
+HandleSolidUp:
+    LDA #$00
+    STA playerdata+Entity::velocity
+    LDA playerdata+Entity::state
+    AND #%11111011  ;turn off jump
+    ORA #%00100000  ;turn on fall
+    STA playerdata+Entity::state
+    LDA playerdata+Entity::ypos ;push back down
+    AND #%11110000
+    CLC
+    ADC #$10
+    STA playerdata+Entity::ypos
+    JMP CheckOver
+ProcessLeft:
+    LDA collreturnval
+    AND #%00001100
+    CMP #%00001000      ;Climbable
+    BEQ HandleClimbableLeft
+    CMP #%00000100      ;solid
+    BEQ HandleSolidLeft
+    JMP ProcessRight
+HandleClimbableLeft:
+    ;no left exits yet
+    JMP ProcessRight
+HandleSolidLeft:
+    LDA playerdata+Entity::state
+    AND #%11111101  ;turn of walk
+    ORA #%00000001  ;turn on stand
+    STA playerdata+Entity::state
+    INC playerdata+Entity::xpos
+ProcessRight:
+    LDA collreturnval
+    AND #%00000011
+    CMP #%00000010      ;Climbable
+    BEQ HandleClimbableRight
+    CMP #%00000001      ;solid
+    BEQ HandleSolidRight
+    JMP CheckOver
+HandleClimbableRight:
+    ;No right exits yet
+    JMP CheckOver
+HandleSolidRight:
+    LDA playerdata+Entity::state
+    AND #%11111101  ;turn of walk
+    ORA #%00000001  ;turn on stand
+    STA playerdata+Entity::state
+    DEC playerdata+Entity::xpos
+CheckOver:
     JSR CheckPlayerCollisionOver
-
-
 EndProcessPlayer:
 
     ;update ENTITIES array with current player data
@@ -695,6 +789,7 @@ SnakeWalkProcess:
     JMP FinishSnake
 SnakeMove:
     LDA #$00
+    STA collreturnval
     STA entitybuffer+Entity::env    ;reset timer
     LDA entitybuffer+Entity::state ;reload state
     ASL
@@ -921,17 +1016,15 @@ PlayerCollisionDetection:
             NOP
             
             LDA playerdata+Entity::xpos
-            ;CLC
-            ;ADC #$02    ;one pixel in from left edge - x1
+            CLC
+            ADC #$01    ;one pixel in from left edge - x1
             TAX         ;store in X reg (X1)
-            ;CLC
-            ;ADC #$0C    ;plus 14 more to get one pixel in from right edge - x2
+            CLC
+            ADC #$0C    ;plus 14 more to get one pixel in from right edge - x2
             TAY         ;store on Y     (X2)
             LDA playerdata+Entity::ypos
-            ;CLC
-            ;ADC #$10    ;y pos of player's bottom edge (feet) - y
-            CMP #$00    ;Top of screen?
-            BEQ ExitUp
+            ;CMP #$00    ;Top of screen?
+            ;BEQ ExitUp
             ;CMP #$FE
             ;BEQ ExitUp
             LSR         ;divide by 16
@@ -991,14 +1084,18 @@ PlayerCollisionDetection:
             BEQ MaskOutThreeU ;may be to far to branch
             JMP ReturnFromCollisionUp
         ExitUp:
-            LDA #$01
-            STA exitdir
-            LDY #$01        ;offset to "Up" exit id
-            LDA (level+Area::selfaddr1), y  ;exit id is the selfid of the next area, which should also be the offset into the AREABANK array
-            STA nextareaid  ;get id of next area 
-            JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
-            LDA #$06        ;Load next area game state
-            STA gamestate
+            ;LDA #$01
+            ;STA exitdir
+            ;LDY #$01        ;offset to "Up" exit id
+            ;LDA (level+Area::selfaddr1), y  ;exit id is the selfid of the next area, which should also be the offset into the AREABANK array
+            ;STA nextareaid  ;get id of next area 
+            ;JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
+            ;LDA #$06        ;Load next area game state
+            ;STA gamestate
+            LDA collreturnval
+            ORA #%10000000      ;Exit value in UP bits
+            AND #%10111111      ;force 10xxxxxx
+            STA collreturnval
             JMP ReturnFromCollisionUp
         MaskOutZeroU:
             LDA colltemp1
@@ -1028,28 +1125,42 @@ PlayerCollisionDetection:
             LDA colltemp1
             AND #%00000011
         ResolveU:
-            ;CMP #$10            ;climbable?
-            ;BEQ SetClimbableU
+            CMP #$10            ;climbable?
+            BEQ SetClimbableU
             CMP #$01            ;is solid
             BEQ ReturnSolidU     ;if x1 or x2 is over solid, we can stop here
             ;CMP #$11            ;if x1 or x2 is over damaging, we can resolve?
             ;BEQ SetX1Damaging
-            JMP ReturnFromCollisionUp
+            ;JMP ReturnFromCollisionUp
         ContinueResolveU:       ;TODO: check accuracy of this test for UP
             LDA colltemp3       ;holding whether we checked x1 or x2
             CMP #$01            ;if both points checked and no solid below, we must be falling
-            BEQ ReturnSolidU
-            JMP TestX2U
+            BNE TestX2U
+            LDA playerdata+Entity::env
+            AND #%00010000
+            CMP #%00010000
+            BEQ ReturnClimbableU
+            JMP ReturnFromCollisionUp
         SetClimbableU:
             LDA playerdata+Entity::env
             ORA #%00010000
             STA playerdata+Entity::env
             JMP ContinueResolveU
         ;vv bypassing this function for now vv
+        ReturnClimbableU:
+            LDA collreturnval
+            ORA #%10000000
+            AND #%10111111
+            STA collreturnval
+            JMP ReturnFromCollisionUp
         ReturnSolidU:            ;resolve collision here. in future, may be wise to separate resolutinon from check
-            INC playerdata+Entity::ypos     ;push back from entering block
-            LDA #$00
-            STA playerdata+Entity::velocity ;set velocity to zero
+            ;INC playerdata+Entity::ypos     ;push back from entering block
+            ;LDA #$00
+            ;STA playerdata+Entity::velocity ;set velocity to zero
+            LDA collreturnval
+            ORA #%01000000        ;solid in up position
+            AND #%01111111        ;for 01 into top 2 bits 01xxxxxx
+            STA collreturnval
         ReturnFromCollisionUp:
             LDA #$00
             STA colltemp1
@@ -1086,6 +1197,9 @@ PlayerCollisionDetection:
             BEQ ExitDown
             CMP #$FE
             BEQ ExitDown
+            CMP #$FF
+            BEQ ExitDown
+
             LSR         ;divide by 16
             LSR         ;meta y of player's feet
             LSR
@@ -1149,6 +1263,9 @@ PlayerCollisionDetection:
             JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
             LDA #$06        ;Load next area game state
             STA gamestate
+            ;LDA collreturnval
+            ;ORA #%00100000
+            ;AND #%11101111      ;force mask xx10xxxx
             JMP ReturnFromCollisionDown
         MaskOutZero:
             LDA colltemp1
@@ -1178,36 +1295,39 @@ PlayerCollisionDetection:
             LDA colltemp1
             AND #%00000011
         Resolve:
-            CMP #$01
+            CMP #%00000001
             BEQ ReturnSolid     ;if x1 or x2 is over solid, we can stop here
             ;CMP #$11            ;if x1 or x2 is over damaging, we can resolve?
             ;BEQ SetX1Damaging
-            CMP #$10            ;climbable?
-            BEQ SetClimbable
+            CMP #%00000010            ;climbable?
+            BEQ ReturnClimbable
         ContinueResolve:
             LDA colltemp3       ;holding whether we checked x1 or x2
             CMP #$01            ;if both points checked and no solid below, we must be falling
-            BEQ SetFalling
-            JMP TestX2
+            BNE TestX2
+            JMP ReturnFalling
         SetClimbable:
+            JMP ContinueResolve
+        ReturnClimbable:
             LDA playerdata+Entity::env
             ORA #%00010000
             STA playerdata+Entity::env
-            JMP ContinueResolve
-        SetFalling:
-            LDA playerdata+Entity::state
-            ORA #%00100000  ;turn on falling
-            AND #%11111110  ;turn off standing
-            STA playerdata+Entity::state
+
+            LDA collreturnval
+            AND #%11101111
+            ORA #%00100000
+            STA collreturnval
+            JMP ReturnFromCollisionDown
+        ReturnFalling:
+            LDA collreturnval
+            AND #%11001111      ;mask xx00xxxx, nothing in down bit means set state to falling
+            STA collreturnval
             JMP ReturnFromCollisionDown
         ReturnSolid:            ;resolve collision here. in future, may be wise to separate resolutinon from check
-            LDA playerdata+Entity::ypos
-            AND #%11110000      ;return to "top" of metatile by zeroing out the low nibble (any pixels "below" the multiple of 16)
-            STA playerdata+Entity::ypos
-            LDA playerdata+Entity::state
-            ORA #%00000001      ;set status to standing
-            AND #%11011011      ;if falling or jumping, clear
-            STA playerdata+Entity::state
+            LDA collreturnval
+            ORA #%00010000
+            AND #%11011111      ;Mask xx01xxxx
+            STA collreturnval
         ReturnFromCollisionDown:
             LDA #$00
             STA colltemp1
@@ -1224,7 +1344,7 @@ PlayerCollisionDetection:
 
     ;----------------------------------------------------------------------------------------------------
     CheckPlayerCollisionLeft:
-        CheckPlayerCollisionLeftStart:
+        CheckPlayerCollisionLeftStart:  ;add edge screen detect
             PHA
             TXA
             PHA
@@ -1248,47 +1368,49 @@ PlayerCollisionDetection:
             CMP #$02
             BEQ MaskOutTwoL
             CMP #$03
-            BNE ReturnFromCollL
+            BNE ReturnNothingL
             JMP MaskOutThreeL
         MaskOutZeroL:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%11000000 ;the bit set to the left of three
-            CMP #%00000000
-            BEQ ReturnFromCollL
-            CMP #%10000000
-            BEQ ReturnFromCollL
-            INC playerdata+Entity::xpos
-            JMP ReturnFromCollL
+            CMP #%01000000
+            BNE ReturnNothingL
+            ;INC playerdata+Entity::xpos
+            JMP ReturnSolidL
         MaskOutOneL:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%00110000 ;the bit set to the left of three
-            CMP #%00000000
-            BEQ ReturnFromCollL
-            CMP #%00100000
-            BEQ ReturnFromCollL
-            INC playerdata+Entity::xpos
-            JMP ReturnFromCollL
+            CMP #%00010000
+            BNE ReturnNothingL
+            ;INC playerdata+Entity::xpos
+            JMP ReturnSolidL
         MaskOutTwoL:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%00001100 ;the bit set to the left of three
-            CMP #%00000000
-            BEQ ReturnFromCollL
-            CMP #%00001000
-            BEQ ReturnFromCollL
-            INC playerdata+Entity::xpos
-            JMP ReturnFromCollL
+            CMP #%00000100
+            BNE ReturnNothingL
+            ;INC playerdata+Entity::xpos
+            JMP ReturnSolidL
         MaskOutThreeL:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%00000011 ;the bit set to the left of three
-            CMP #%00000000
-            BEQ ReturnFromCollL
-            CMP #%00000010
-            BEQ ReturnFromCollL
-            INC playerdata+Entity::xpos
+            CMP #%00000001
+            BNE ReturnNothingL
+            ;INC playerdata+Entity::xpos
+        ReturnSolidL:
+            LDA collreturnval
+            ORA #%00000100
+            AND #%11110111      ;mask xxxx01xx
+            STA collreturnval
+            JMP ReturnFromCollL
+        ReturnNothingL:
+            LDA collreturnval
+            AND #%11110011
+            STA collreturnval
         ReturnFromCollL:
             LDA #$00
             STA colltemp1
@@ -1320,6 +1442,8 @@ PlayerCollisionDetection:
             STA colltemp2   ;Location of player byte in coll map
             ;find bit pair
             LDA playerdata+Entity::metax
+            CLC
+            ADC #$01
             AND #%00000011
             CMP #$00
             BEQ MaskOutZeroR
@@ -1333,42 +1457,44 @@ PlayerCollisionDetection:
         MaskOutZeroR:
             LDX colltemp2
             LDA COLLMAPBANK, x
-            AND #%00110000 ;the bit set to the left of three
-            CMP #%00000000
-            BEQ ReturnFromCollR
-            CMP #%00100000
-            BEQ ReturnFromCollR
-            DEC playerdata+Entity::xpos
-            JMP ReturnFromCollR
+            AND #%11000000 ;the bit set to the left of three
+            CMP #%01000000
+            BNE ReturnNothingR
+            ;DEC playerdata+Entity::xpos
+            JMP ReturnSolidR
         MaskOutOneR:
             LDX colltemp2
             LDA COLLMAPBANK, x
-            AND #%00001100 ;the bit set to the left of three
-            CMP #%00000000
-            BEQ ReturnFromCollR
-            CMP #%00001000
-            BEQ ReturnFromCollR
-            DEC playerdata+Entity::xpos
-            JMP ReturnFromCollR
+            AND #%00110000 ;the bit set to the left of three
+            CMP #%00010000
+            BNE ReturnNothingR
+            ;DEC playerdata+Entity::xpos
+            JMP ReturnSolidR
         MaskOutTwoR:
             LDX colltemp2
             LDA COLLMAPBANK, x
-            AND #%00000011 ;the bit set to the left of three
-            CMP #%00000000
-            BEQ ReturnFromCollR
-            CMP #%00000010
-            BEQ ReturnFromCollR
-            DEC playerdata+Entity::xpos
-            JMP ReturnFromCollR
+            AND #%00001100 ;the bit set to the left of three
+            CMP #%00000100
+            BNE ReturnNothingR
+            ;DEC playerdata+Entity::xpos
+            JMP ReturnSolidR
         MaskOutThreeR:
             LDX colltemp2
             LDA COLLMAPBANK, x
-            AND #%11000000 ;the bit set to the left of three
-            CMP #%00000000
-            BEQ ReturnFromCollR
-            CMP #%10000000
-            BEQ ReturnFromCollR
-            DEC playerdata+Entity::xpos
+            AND #%00000011 ;the bit set to the left of three
+            CMP #%00000001
+            BNE ReturnNothingR
+            ;DEC playerdata+Entity::xpos
+        ReturnSolidR:
+            LDA collreturnval
+            ORA #%00000001
+            AND #%11111101      ;mask xxxxxx01
+            STA collreturnval
+            JMP ReturnFromCollR
+        ReturnNothingR:
+            LDA collreturnval
+            AND #%11111100
+            STA collreturnval
         ReturnFromCollR:
             LDA #$00
             STA colltemp1
@@ -3340,10 +3466,10 @@ CONTENTS0:
 BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all they need is position X{0000}  --Y{0000}-- Actually they don't need Y
     .byte $00, $10,           $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
     .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
     .byte $00, $10, $20, $30, $40, $50,                                              $F0, $FF
     .byte $00,                                                                       $F0, $FF
     .byte $00,                     $50, $60, $70, $80, $90,                          $F0, $FF
-    .byte $00,                                                                       $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
     .byte $00,                                               $A0, $B0,$C8, $D0, $E0, $F0, $FF                              
@@ -3357,10 +3483,10 @@ BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all
 COLLMAP0: ;will reduce to 60 bytes
     .byte %01010000, %01010101, %01010101, %01010101
     .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
     .byte %01010101, %01010000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00010101, %01010000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01000000, %00000000, %00000101, %10010101
@@ -3371,7 +3497,7 @@ COLLMAP0: ;will reduce to 60 bytes
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01010101, %01010101, %01010101, %10010101
 ENTS0:
-    .byte $83, $04       ;snake at (6,14)
+    .byte $84, $04       ;snake at (8, 4)
     .byte $FF           ;end of list
 
 AREA1:
