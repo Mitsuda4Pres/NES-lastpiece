@@ -15,8 +15,8 @@
 ;Can define game constants here, such as a global structure or variables
 ;Game Constants (make sure to use #CONSTANT when calling for value, not address)
 GRAVITY         = $02
-JUMPFORCE       = $18
-
+JUMPFORCE       = $28
+TERMINALVEL     = $04
 ;;; PPU registers.
 PPUCTRL         = $2000
 PPUMASK         = $2001
@@ -416,9 +416,12 @@ checka:
     LDA controller
     AND #$80
     BEQ checkarelease
+    
     LDA buttonflag
-    ORA #$01
-    STA buttonflag
+    AND #%00000001
+    CMP #$01
+    BEQ checkarelease
+
     LDA playerdata+Entity::state
     AND #%00000100      ;is jumping?
     CMP #$04
@@ -434,8 +437,16 @@ checka:
     STA playerdata+Entity::state
     LDA #JUMPFORCE
     STA playerdata+Entity::velocity
+
+    INC buttonflag
+    ;ORA #$01
+    ;STA buttonflag
+
     JMP finishcontrols
 checkarelease:
+    LDA controller
+    AND #$80
+    BNE finishcontrols
     LDA buttonflag
     AND #$01
     BEQ finishcontrols
@@ -476,11 +487,17 @@ LoadState:
     CMP #%00000100
     BNE CheckClimbingState
 JumpResolve:
+    ;if jumping, then not falling. Now that we have terminal velocity we can separate these for state management sake
+    ;LDA playerdata+Entity::state
+    ;AND #%11011111
+    ;STA playerdata+Entity::state
     LDA playerdata+Entity::velocity
+    BEQ PlayerDescend       ;branch on less than or equal to zero
     BMI PlayerDescend
 PlayerAscend:
     TAX
     CLC
+    LSR
     LSR
     LSR
     STA playerdata+Entity::velocity
@@ -488,7 +505,6 @@ PlayerAscend:
     SEC
     SBC playerdata+Entity::velocity
     STA playerdata+Entity::ypos
-    ;check UP collisions
     TXA
     ;STA playerdata+Entity::velocity
     SEC
@@ -503,7 +519,14 @@ PlayerDescend:
     CLC
     LSR             ;divide by 4
     LSR
+    CMP #TERMINALVEL
+    BPL SetTerminalVelocity
     STA playerdata+Entity::velocity
+    JMP ChangeYPos
+SetTerminalVelocity:
+    LDA #TERMINALVEL
+    STA playerdata+Entity::velocity
+ChangeYPos:
     LDA playerdata+Entity::ypos
     CLC
     ADC playerdata+Entity::velocity
@@ -607,6 +630,7 @@ PlayerFall:
     ;to get it working, fall at a rate of 2 pps. Math later.
     INC playerdata+Entity::ypos
     INC playerdata+Entity::ypos
+
     JMP CheckCollisions
 PlayerIdle:
     LDA #$00
@@ -622,13 +646,80 @@ PlayerIdle:
 CheckCollisions:;check for collisions from new position
     LDA #$00
     STA collreturnval
-    JSR CheckPlayerCollisionDown    ;check downward collision every frame
-    JSR CheckPlayerCollisionUp    ;check upward collision every frame
-    JSR CheckPlayerCollisionLeft
-    JSR CheckPlayerCollisionRight  
 ProcessCollisions:                  ;get return values from all collisions and process
-    LDA collreturnval   ;00 nothing, 01 solid, 10 climbable, 11 damage!
+    ;LDA collreturnval   ;00 nothing, 01 solid, 10 climbable, 11 damage!
+ProcessLeft:
+    JSR CheckPlayerCollisionLeft
+    LDA collreturnval
+    AND #%00001100
+    CMP #%00001000      ;Climbable
+    BEQ HandleClimbableLeft
+    CMP #%00000100      ;solid
+    BEQ HandleSolidLeft
+    JMP ProcessRight
+HandleClimbableLeft:
+    ;no left exits yet
+    LDA #$01
+    STA playerdata+Entity::env
+    JMP ProcessRight
+HandleSolidLeft:
+    LDA playerdata+Entity::state
+    AND #%11111101  ;turn of walk
+    ORA #%00000001  ;turn on stand
+    STA playerdata+Entity::state
+    INC playerdata+Entity::xpos
+ProcessRight:
+    JSR CheckPlayerCollisionRight  
+    LDA collreturnval
+    AND #%00000011
+    CMP #%00000010      ;Climbable
+    BEQ HandleClimbableRight
+    CMP #%00000001      ;solid
+    BEQ HandleSolidRight
+    JMP ProcessUp
+HandleClimbableRight:
+    ;No right exits yet
+    LDA #$01
+    STA playerdata+Entity::env
+
+    JMP ProcessUp
+HandleSolidRight:
+    ;LDA playerdata+Entity::state
+    ;AND #%11111101  ;turn of walk
+    ;ORA #%00000001  ;turn on stand
+    ;STA playerdata+Entity::state
+    DEC playerdata+Entity::xpos
+
+ProcessUp:
+    JSR CheckPlayerCollisionUp    ;check upward collision every frame
+    LDA collreturnval
+    AND #%11000000
+    CMP #%10000000      ;exit
+    BEQ HandleClimbableUp
+    CMP #%01000000      ;solid
+    BEQ HandleSolidUp
+    JMP ProcessDown
+HandleClimbableUp:
+    ;no up exits yet
+    LDA #$01
+    STA playerdata+Entity::env
+
+    JMP ProcessDown
+HandleSolidUp:
+    LDA #$00
+    STA playerdata+Entity::velocity
+    ;LDA playerdata+Entity::state
+    ;AND #%11111011  ;turn off jump
+    ;ORA #%00100000  ;turn on fall
+    ;STA playerdata+Entity::state
+    LDA playerdata+Entity::ypos ;push back down
+    AND #%11110000
+    CLC
+    ADC #$10
+    STA playerdata+Entity::ypos
+    JMP CheckOver
 ProcessDown:
+    JSR CheckPlayerCollisionDown    ;check downward collision every frame
     LDA collreturnval
     AND #%00110000
     CMP #%00100000      ;Climbable
@@ -645,7 +736,7 @@ HandleClimbableDown:
 KeepClimbingDown:
     LDA playerdata+Entity::state
     AND #%11011000      ;turn off fall, jump, walk, stand
-    JMP ProcessUp
+    JMP CheckOver
 HandleSolidDown:
     LDA playerdata+Entity::state
     AND #%11001011  ;turn off fall, climb, and jump
@@ -654,70 +745,17 @@ HandleSolidDown:
     LDA playerdata+Entity::ypos
     AND #%11110000
     STA playerdata+Entity::ypos
-    JMP ProcessUp
+    JMP CheckOver
 HandleNothingDown:
     LDA playerdata+Entity::state
+    TAX
+    AND #%00000100
+    BNE CheckOver
+    TXA
     AND #%11101100      ;turn off climb, jump, stand
     ORA #%00100000      ;turn on falling
     STA playerdata+Entity::state
-ProcessUp:
-    LDA collreturnval
-    AND #%11000000
-    CMP #%10000000      ;exit
-    BEQ HandleClimbableUp
-    CMP #%01000000      ;solid
-    BEQ HandleSolidUp
-    JMP ProcessLeft
-HandleClimbableUp:
-    ;no up exits yet
-    JMP ProcessLeft
-HandleSolidUp:
-    LDA #$00
-    STA playerdata+Entity::velocity
-    LDA playerdata+Entity::state
-    AND #%11111011  ;turn off jump
-    ORA #%00100000  ;turn on fall
-    STA playerdata+Entity::state
-    LDA playerdata+Entity::ypos ;push back down
-    AND #%11110000
-    CLC
-    ADC #$10
-    STA playerdata+Entity::ypos
-    JMP CheckOver
-ProcessLeft:
-    LDA collreturnval
-    AND #%00001100
-    CMP #%00001000      ;Climbable
-    BEQ HandleClimbableLeft
-    CMP #%00000100      ;solid
-    BEQ HandleSolidLeft
-    JMP ProcessRight
-HandleClimbableLeft:
-    ;no left exits yet
-    JMP ProcessRight
-HandleSolidLeft:
-    LDA playerdata+Entity::state
-    AND #%11111101  ;turn of walk
-    ORA #%00000001  ;turn on stand
-    STA playerdata+Entity::state
-    INC playerdata+Entity::xpos
-ProcessRight:
-    LDA collreturnval
-    AND #%00000011
-    CMP #%00000010      ;Climbable
-    BEQ HandleClimbableRight
-    CMP #%00000001      ;solid
-    BEQ HandleSolidRight
-    JMP CheckOver
-HandleClimbableRight:
-    ;No right exits yet
-    JMP CheckOver
-HandleSolidRight:
-    LDA playerdata+Entity::state
-    AND #%11111101  ;turn of walk
-    ORA #%00000001  ;turn on stand
-    STA playerdata+Entity::state
-    DEC playerdata+Entity::xpos
+
 CheckOver:
     JSR CheckPlayerCollisionOver
 EndProcessPlayer:
@@ -1193,17 +1231,18 @@ PlayerCollisionDetection:
             LDA playerdata+Entity::ypos
             CLC
             ADC #$10    ;y pos of player's bottom edge (feet) - y
-            CMP #$FD    ;Bottom of screen?
-            BEQ ExitDown
-            CMP #$FE
-            BEQ ExitDown
-            CMP #$FF
-            BEQ ExitDown
-
+            ;CMP #$FD    ;Bottom of tile of screen?
+            ;BEQ ExitDown
+            ;CMP #$FE
+            ;BEQ ExitDown
+            ;CMP #$FF
+            ;BEQ ExitDown
             LSR         ;divide by 16
             LSR         ;meta y of player's feet
             LSR
             LSR
+            CMP #$0F
+            BEQ ExitDown
             ASL
             ASL
             STA checkvar         ;store in checkvar
@@ -1305,7 +1344,7 @@ PlayerCollisionDetection:
             LDA colltemp3       ;holding whether we checked x1 or x2
             CMP #$01            ;if both points checked and no solid below, we must be falling
             BNE TestX2
-            JMP ReturnFalling
+            JMP ReturnNoGround
         SetClimbable:
             JMP ContinueResolve
         ReturnClimbable:
@@ -1318,7 +1357,8 @@ PlayerCollisionDetection:
             ORA #%00100000
             STA collreturnval
             JMP ReturnFromCollisionDown
-        ReturnFalling:
+        ReturnNoGround:
+            ;if player is jumping, do not reset to falling
             LDA collreturnval
             AND #%11001111      ;mask xx00xxxx, nothing in down bit means set state to falling
             STA collreturnval
@@ -1352,13 +1392,36 @@ PlayerCollisionDetection:
             LSR
             LSR
             STA colltemp1
-            LDA playerdata+Entity::metay
+            LDA playerdata+Entity::ypos
+            LSR
+            LSR
+            LSR
+            LSR     ;meta y
+        CheckY2L:   ;check this first. yes i know it's backwards
             ASL
             ASL
             CLC
             ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
             STA colltemp2   ;Location of player byte in coll map
+            LDA #$00
+            STA checkvar
+            JMP ContinueCheckL
+        CheckY1L:
+            LDA playerdata+Entity::ypos
+            CLC
+            ADC #$0F
+            LSR
+            LSR
+            LSR
+            LSR
+            ASL
+            ASL
+            CLC
+            ADC colltemp1
+            STA colltemp2
+            INC checkvar
             ;find bit pair
+        ContinueCheckL:
             LDA playerdata+Entity::metax
             AND #%00000011
             CMP #$00
@@ -1374,33 +1437,50 @@ PlayerCollisionDetection:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%11000000 ;the bit set to the left of three
-            CMP #%01000000
-            BNE ReturnNothingL
+            LSR
+            LSR
+            LSR
+            LSR
+            LSR
+            LSR
+            ;CMP #%01000000
+            ;BNE ReturnNothingL
             ;INC playerdata+Entity::xpos
-            JMP ReturnSolidL
+            JMP ResolveL
         MaskOutOneL:
             LDX colltemp2
             LDA COLLMAPBANK, x
-            AND #%00110000 ;the bit set to the left of three
-            CMP #%00010000
-            BNE ReturnNothingL
+            AND #%00110000 
+            LSR
+            LSR
+            LSR
+            LSR
+            ;CMP #%00010000
+            ;BNE ReturnNothingL
             ;INC playerdata+Entity::xpos
-            JMP ReturnSolidL
+            JMP ResolveL
         MaskOutTwoL:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%00001100 ;the bit set to the left of three
-            CMP #%00000100
-            BNE ReturnNothingL
+            LSR
+            LSR
+            ;CMP #%00000100
+            ;BNE ReturnNothingL
             ;INC playerdata+Entity::xpos
-            JMP ReturnSolidL
+            JMP ResolveL
         MaskOutThreeL:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%00000011 ;the bit set to the left of three
-            CMP #%00000001
-            BNE ReturnNothingL
-            ;INC playerdata+Entity::xpos
+        ResolveL:
+            CMP #%00000001  ;solid?
+            BEQ ReturnSolidL
+        ContinueResolveL:
+            LDA checkvar
+            CMP #$01
+            BNE CheckY1L
+            JMP ReturnNothingL
         ReturnSolidL:
             LDA collreturnval
             ORA #%00000100
@@ -1424,7 +1504,7 @@ PlayerCollisionDetection:
             RTS
     ;---------------------------------------------------------------
     CheckPlayerCollisionRight:    ;Does this have the same bug as EntityCollision did? Do I need to shift the byte I check in collmap?
-        CheckPlayerCollisionRightStart:
+        CheckPlayerCollisionRightStart:  ;add edge screen detect
             PHA
             TXA
             PHA
@@ -1434,13 +1514,36 @@ PlayerCollisionDetection:
             LSR
             LSR
             STA colltemp1
-            LDA playerdata+Entity::metay
+            LDA playerdata+Entity::ypos
+            LSR
+            LSR
+            LSR
+            LSR     ;meta y
+        CheckY2R:   ;check this first. yes i know it's backwards
             ASL
             ASL
             CLC
             ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
             STA colltemp2   ;Location of player byte in coll map
+            LDA #$00
+            STA checkvar
+            JMP ContinueCheckR
+        CheckY1R:
+            LDA playerdata+Entity::ypos
+            CLC
+            ADC #$0F
+            LSR
+            LSR
+            LSR
+            LSR
+            ASL
+            ASL
+            CLC
+            ADC colltemp1
+            STA colltemp2
+            INC checkvar
             ;find bit pair
+        ContinueCheckR:
             LDA playerdata+Entity::metax
             CLC
             ADC #$01
@@ -1452,43 +1555,60 @@ PlayerCollisionDetection:
             CMP #$02
             BEQ MaskOutTwoR
             CMP #$03
-            BNE ReturnFromCollR
+            BNE ReturnNothingR
             JMP MaskOutThreeR
         MaskOutZeroR:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%11000000 ;the bit set to the left of three
-            CMP #%01000000
-            BNE ReturnNothingR
-            ;DEC playerdata+Entity::xpos
-            JMP ReturnSolidR
+            LSR
+            LSR
+            LSR
+            LSR
+            LSR
+            LSR
+            ;CMP #%01000000
+            ;BNE ReturnNothingL
+            ;INC playerdata+Entity::xpos
+            JMP ResolveR
         MaskOutOneR:
             LDX colltemp2
             LDA COLLMAPBANK, x
-            AND #%00110000 ;the bit set to the left of three
-            CMP #%00010000
-            BNE ReturnNothingR
-            ;DEC playerdata+Entity::xpos
-            JMP ReturnSolidR
+            AND #%00110000 
+            LSR
+            LSR
+            LSR
+            LSR
+            ;CMP #%00010000
+            ;BNE ReturnNothingL
+            ;INC playerdata+Entity::xpos
+            JMP ResolveR
         MaskOutTwoR:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%00001100 ;the bit set to the left of three
-            CMP #%00000100
-            BNE ReturnNothingR
-            ;DEC playerdata+Entity::xpos
-            JMP ReturnSolidR
+            LSR
+            LSR
+            ;CMP #%00000100
+            ;BNE ReturnNothingL
+            ;INC playerdata+Entity::xpos
+            JMP ResolveR
         MaskOutThreeR:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%00000011 ;the bit set to the left of three
-            CMP #%00000001
-            BNE ReturnNothingR
-            ;DEC playerdata+Entity::xpos
+        ResolveR:
+            CMP #%00000001  ;solid?
+            BEQ ReturnSolidR
+        ContinueResolveR:
+            LDA checkvar
+            CMP #$01
+            BNE CheckY1R
+            JMP ReturnNothingR
         ReturnSolidR:
             LDA collreturnval
             ORA #%00000001
-            AND #%11111101      ;mask xxxxxx01
+            AND #%11111101      ;mask xxxx01xx
             STA collreturnval
             JMP ReturnFromCollR
         ReturnNothingR:
@@ -1506,7 +1626,7 @@ PlayerCollisionDetection:
             TAX
             PLA
             RTS
-    ;------------------------------------------------------------------------------------------------------------
+;------------------------------------------------------------------------------------------------------------
     CheckPlayerCollisionOver:
         CheckPlayerCollisionOverStart:
             PHA
@@ -3464,10 +3584,10 @@ CONTENTS0:
     .byte $65   ;offset to collmap
     .byte $A1   ;offset to entities
 BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all they need is position X{0000}  --Y{0000}-- Actually they don't need Y
-    .byte $00, $10,           $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00, $10, $20, $30, $40, $50,                                              $F0, $FF
+    .byte $00, $10, $27,      $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF   ;right bit = tile id
+    .byte $00,      $27,                                                             $F0, $FF   ;0 = block
+    .byte $00,      $27,                                                             $F0, $FF   ;7 = rope
+    .byte $00, $10, $20, $30, $40, $50,                                              $F0, $FF   ;8 = vine
     .byte $00,                                                                       $F0, $FF
     .byte $00,                     $50, $60, $70, $80, $90,                          $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
