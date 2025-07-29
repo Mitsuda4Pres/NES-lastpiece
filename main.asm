@@ -722,6 +722,11 @@ HandleSolidUp:
     STA playerdata+Entity::ypos
     JMP EndProcessPlayer
 HandleNothingUp:
+    ;LDA playerdata+Entity::state
+    ;AND #%00010000
+    ;CMP #%00010000
+    ;BNE ProcessDown
+    ;INC playerdata+Entity::ypos
 ProcessDown:
     JSR CheckPlayerCollisionDown    ;check downward collision every frame
     LDA collreturnval
@@ -760,11 +765,13 @@ HandleNothingDown:
     AND #%00000100
     BNE EndProcessPlayer
     TXA
+    AND #%00010000
+    BNE EndProcessPlayer
+    TXA
     AND #%11101100      ;turn off climb, jump, stand
     ORA #%00100000      ;turn on falling
     STA playerdata+Entity::state
 EndProcessPlayer:
-
     ;update ENTITIES array with current player data
     ;first add playerdata to entitiesbuffer. this is inefficient in cycles, but to have a duplicate subroutine is inefficient in memory.
     ;TODO: find solution to above issue
