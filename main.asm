@@ -66,7 +66,7 @@ ENTITIES        = $0600
     trspr       .byte
     blspr       .byte
     brspr       .byte
-    env         .byte   ;$00 - nothing, $01 - climbable
+    env         .byte   ;$00 - nothing, $01 - climbable, $02 - damage, $03 - other entity  %tltrblbr 00-00-00-00
     metax       .byte
     metay       .byte
     ;any variables below this comment are not stored in ENTITIES RAM
@@ -119,6 +119,7 @@ collreturnval:      .res 1
 animaframes:        .res 1
 totalsprites:       .res 1
 playerdata:         .res .sizeof(Entity)            ;12b
+playeroverbox:       .res 1
 metatile:           .res .sizeof(Metatile)          ;8b
 entitybuffer:       .res .sizeof(Entity)            ;12b
 blockrow:           .res 16
@@ -723,7 +724,7 @@ HandleSolidUp:
     JMP EndProcessPlayer
 HandleNothingUp:
     ;LDA playerdata+Entity::state
-    ;AND #%00010000
+    ;AND #%00010000      ;is climbing?
     ;CMP #%00010000
     ;BNE ProcessDown
     ;INC playerdata+Entity::ypos
@@ -737,8 +738,8 @@ ProcessDown:
     BEQ HandleSolidDown
     JMP HandleNothingDown
 HandleClimbableDown:
-    LDA #$01
-    STA playerdata+Entity::env
+    ;LDA #$01
+    ;STA playerdata+Entity::env
     LDA playerdata+Entity::state
     AND #%00010000
     CMP #%00010000
@@ -957,8 +958,24 @@ SCREENTRANLOOP:
         JMP InitSpriteLoopST
     ContinueTransition:
         LDA exitdir
+        CMP #$01
+        BEQ TransitionUp
         CMP #$02
+        BEQ TransitionDown
         BNE waitfordrawtocompleteST     ;change as more directions added ofc
+    TransitionUp:
+        DEC scrolly
+        DEC scrolly
+        INC playerdata+Entity::ypos
+        INC playerdata+Entity::ypos
+        LDA playerdata+Entity::ypos
+        CMP #$00
+        BEQ DoneTransitionUp
+        LDA #$FC
+        STA playerdata+Entity::ypos
+    DoneTransitionUp:
+        LDX #$00
+        JMP CopyPDtoEBLoopST
     TransitionDown: ;downward exit means screen scrolls up, scrolly will decrement
         INC scrolly
         INC scrolly ;where the magic happens
@@ -968,7 +985,7 @@ SCREENTRANLOOP:
         SEC
         SBC #$FD
         BCC DoneTransitionDown
-        LDA #$00
+        LDA #$01
         STA playerdata+Entity::ypos
     DoneTransitionDown:
         LDX #$00
@@ -983,6 +1000,18 @@ SCREENTRANLOOP:
         LDA #$01
         STA checkvar    ;set checkvar to 1 so subroutine does not mess with stack
         JSR WriteEntityFromBuffer ;Subroutine to write all the changes made to player this frame
+    CheckScrollDirection:
+        LDA exitdir
+        CMP #$01
+        BEQ CheckEndScrollUp
+        CMP #$02
+        BEQ CheckEndScrollDown
+    CheckEndScrollUp:
+        LDA scrolly
+        CMP #$00
+        BNE waitfordrawtocompleteST
+        JMP ResetScrollY
+    CheckEndScrollDown:
         LDA scrolly
         CMP #$F0
         BNE waitfordrawtocompleteST
@@ -1073,10 +1102,10 @@ PlayerCollisionDetection:
             ADC #$0C    ;plus 14 more to get one pixel in from right edge - x2
             TAY         ;store on Y     (X2)
             LDA playerdata+Entity::ypos
-            ;CMP #$00    ;Top of screen?
-            ;BEQ ExitUp
-            ;CMP #$FE
-            ;BEQ ExitUp
+            CMP #$00    ;Top of screen?
+            BEQ ExitUp
+            CMP #$FF
+            BEQ ExitUp
             LSR         ;divide by 16
             LSR         ;meta y of player's head
             LSR
@@ -1134,18 +1163,18 @@ PlayerCollisionDetection:
             BEQ MaskOutThreeU ;may be to far to branch
             JMP ReturnFromCollisionUp
         ExitUp:
-            ;LDA #$01
-            ;STA exitdir
-            ;LDY #$01        ;offset to "Up" exit id
-            ;LDA (level+Area::selfaddr1), y  ;exit id is the selfid of the next area, which should also be the offset into the AREABANK array
-            ;STA nextareaid  ;get id of next area 
-            ;JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
-            ;LDA #$06        ;Load next area game state
-            ;STA gamestate
-            LDA collreturnval
-            ORA #%10000000      ;Exit value in UP bits
-            AND #%10111111      ;force 10xxxxxx
-            STA collreturnval
+            LDA #$01
+            STA exitdir
+            LDY #$01        ;offset to "up" exit id
+            LDA (level+Area::selfaddr1), y  ;exit id is the selfid of the next area, which should also be the offset into the AREABANK array
+            STA nextareaid  ;get id of next area 
+            JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
+            LDA #$06        ;Load next area game state
+            STA gamestate
+            ;LDA collreturnval
+            ;ORA #%10000000      ;Exit value in UP bits
+            ;AND #%10111111      ;force 10xxxxxx
+            ;STA collreturnval
             JMP ReturnFromCollisionUp
         MaskOutZeroU:
             LDA colltemp1
@@ -1238,7 +1267,7 @@ PlayerCollisionDetection:
             ADC #$02    ;one pixel in from left edge - x1
             TAX         ;store in X reg
             CLC
-            ADC #$0C    ;plus 14 more to get one pixel in from right edge - x2
+            ADC #$0D    ;plus 14 more to get one pixel in from right edge - x2
             TAY         ;store on Y
             LDA playerdata+Entity::ypos
             CLC
@@ -1357,17 +1386,17 @@ PlayerCollisionDetection:
             CMP #$01            ;if both points checked and no solid below, we must be falling
             BNE TestX2
             JMP ReturnNoGround
-        SetClimbable:
-            JMP ContinueResolve
         ReturnClimbable:
-            LDA #$01
-            STA playerdata+Entity::env
-
+            ;LDA #$01
+            ;STA playerdata+Entity::env
             LDA collreturnval
             AND #%11101111
             ORA #%00100000
             STA collreturnval
-            JMP ReturnFromCollisionDown
+            LDA colltemp3
+            CMP #$01
+            BEQ ReturnFromCollisionDown
+            JMP TestX2
         ReturnNoGround:
             ;if player is jumping, do not reset to falling
             LDA collreturnval
@@ -1643,17 +1672,27 @@ PlayerCollisionDetection:
             PHA
             TXA
             PHA
+            TYA
+            PHA
+            LDA #$00
+            STA checkvar
+            STA playeroverbox
+            STA collreturnval
+        COSetupLoopZero: ;tl corner
             LDA playerdata+Entity::xpos
             CLC
-            ADC #$08
+            ADC #$03
             LSR
             LSR
             LSR
             LSR
+            STA colltemp3   ;collision map x position
             LSR
             LSR
             STA colltemp1
             LDA playerdata+Entity::ypos
+            CLC
+            ADC #$03
             ;Trying to fix climb screen transition bug here
             LSR
             LSR
@@ -1664,14 +1703,9 @@ PlayerCollisionDetection:
             CLC
             ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
             STA colltemp2   ;Location of player byte in coll map
-            ;find bit pair
-            LDA playerdata+Entity::xpos
-            CLC
-            ADC #$08
-            LSR
-            LSR
-            LSR
-            LSR
+            JMP CheckOverLoop
+        CheckOverLoop:
+            LDA colltemp3
             AND #%00000011
             CMP #$00
             BEQ MaskOutZeroO
@@ -1680,14 +1714,16 @@ PlayerCollisionDetection:
             CMP #$02
             BEQ MaskOutTwoO
             CMP #$03
-            BNE ReturnFromCollO
+            BNE MaskOutFailO
             JMP MaskOutThreeO
+        MaskOutFailO:
+            JMP ReturnFromCollO
         MaskOutZeroO:
             LDX colltemp2
             LDA COLLMAPBANK, x
             AND #%11000000 ;the bit set to the left of three
             CMP #%10000000
-            BNE NoEnvCondition
+            BNE EndLoopO
             LDA #$01            ;01 will mean over a climbable
             STA playerdata+Entity::env
             JMP ReturnFromCollO
@@ -1696,7 +1732,7 @@ PlayerCollisionDetection:
             LDA COLLMAPBANK, x
             AND #%00110000 ;the bit set to the left of three
             CMP #%00100000
-            BNE NoEnvCondition
+            BNE EndLoopO
             LDA #$01            ;01 will mean over a climbable
             STA playerdata+Entity::env
             JMP ReturnFromCollO
@@ -1705,7 +1741,7 @@ PlayerCollisionDetection:
             LDA COLLMAPBANK, x
             AND #%00001100 ;the bit set to the left of three
             CMP #%00001000
-            BNE NoEnvCondition
+            BNE EndLoopO
             LDA #$01            ;01 will mean over a climbable
             STA playerdata+Entity::env
             JMP ReturnFromCollO
@@ -1714,11 +1750,99 @@ PlayerCollisionDetection:
             LDA COLLMAPBANK, x
             AND #%00000011 ;the bit set to the left of three
             CMP #%00000010
-            BNE NoEnvCondition
+            BNE EndLoopO
             LDA #$01            ;01 will mean over a climbable
             STA playerdata+Entity::env
             JMP ReturnFromCollO
-        NoEnvCondition:
+        EndLoopO:
+            INC checkvar
+            LDA checkvar
+            CMP #$01
+            BEQ COSetupLoopOne
+            CMP #$02
+            BEQ COSetupLoopTwo
+            CMP #$03
+            BEQ COSetupLoopThree
+            ;after loop three (fourth iteration) no env is set and subroutine returns
+            JMP ReturnFromCollO
+        COSetupLoopOne: ;tr corner
+            LDA playerdata+Entity::xpos
+            CLC
+            ADC #$0D    ;add 13
+            LSR
+            LSR
+            LSR
+            LSR
+            STA colltemp3   ;collision map x position
+            LSR
+            LSR
+            STA colltemp1
+            LDA playerdata+Entity::ypos
+            CLC
+            ADC #$03
+            ;Trying to fix climb screen transition bug here
+            LSR
+            LSR
+            LSR
+            LSR
+            ASL
+            ASL
+            CLC
+            ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
+            STA colltemp2   ;Location of player byte in coll map
+            JMP CheckOverLoop
+        COSetupLoopTwo:     ;bl corner
+            LDA playerdata+Entity::xpos
+            CLC
+            ADC #$03
+            LSR
+            LSR
+            LSR
+            LSR
+            STA colltemp3   ;collision map x position
+            LSR
+            LSR
+            STA colltemp1
+            LDA playerdata+Entity::ypos
+            CLC
+            ADC #$0D    ;+13
+            ;Trying to fix climb screen transition bug here
+            LSR
+            LSR
+            LSR
+            LSR
+            ASL
+            ASL
+            CLC
+            ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
+            STA colltemp2   ;Location of player byte in coll map
+            JMP CheckOverLoop
+        COSetupLoopThree:   ;br corner
+            LDA playerdata+Entity::xpos
+            CLC
+            ADC #$0D
+            LSR
+            LSR
+            LSR
+            LSR
+            STA colltemp3   ;collision map x position
+            LSR
+            LSR
+            STA colltemp1
+            LDA playerdata+Entity::ypos
+            CLC
+            ADC #$0D
+            ;Trying to fix climb screen transition bug here
+            LSR
+            LSR
+            LSR
+            LSR
+            ASL
+            ASL
+            CLC
+            ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
+            STA colltemp2   ;Location of player byte in coll map
+        NoEnvCondition: 
             LDA #$00
             STA playerdata+Entity::env
         ReturnFromCollO:
@@ -1728,6 +1852,8 @@ PlayerCollisionDetection:
             STA colltemp3
             STA checkvar
 
+            PLA
+            TAY
             PLA
             TAX
             PLA
@@ -2333,7 +2459,12 @@ WriteAreaBankLoop:      ;Write all areas PRGROM addresses into RAM lookup table
     INX
     LDA #>AREA1
     STA AREABANK, x
-    
+    INX
+    LDA #<AREA2
+    STA AREABANK, x
+    INX
+    LDA #>AREA2
+    STA AREABANK, x
     LDX #$00
 InitializeFirstScreen:
     LDA AREABANK                ;set AREA0 as current level
@@ -3556,7 +3687,7 @@ AREA0:  ;How to traverse these memory chunks. Start with a little "table of cont
 SELFID0:
     .byte $00
 EXITS0:          ;$FF is no exit
-    .byte $FF   ;up
+    .byte $04   ;up
     .byte $02   ;down   Exits have to be a multiple of 2
     .byte $FF   ;left
     .byte $FF   ;right
@@ -3613,7 +3744,7 @@ CONTENTS1:
     .byte $08   ;offset to blocktable (maybe unecessary if nothing is variable length before the block table)
     .byte $5D   ;offset to collmap
     .byte $99   ;offset to entities
-BLOCKTABLE1:
+BLOCKTABLE1:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table, etc)
     .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
@@ -3651,6 +3782,57 @@ ENTS1:
     .byte $ED, $00    ;the last piece @ (15,14)
     .byte $3D, $02    ;hat @ (3,14)
     .byte $FF        ;end of list
+
+AREA2:
+SELFID2:
+    .byte $04   ;RAM lookup table place number. By 2s for storing two-byte PRGROM addresses
+EXITS2:
+    .byte $FF   ;up
+    .byte $00   ;down
+    .byte $FF   ;left
+    .byte $FF   ;right
+CONTENTS2:
+    .byte $08   ;offset to blocktable (maybe unecessary if nothing is variable length before the block table)
+    .byte $2A   ;offset to collmap
+    .byte $66   ;offset to entities
+BLOCKTABLE2:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table, etc)
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte                                                                                 $FF
+    .byte           $27,                                                                  $FF
+    .byte           $27,                                                                  $FF
+    .byte $00, $10, $27, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
+;+84 to collmap
+;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
+COLLMAP2:   ;60 bytes
+    .byte %01010000, %01010101, %01010101, %10010101
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000001, %01010001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000001, %01010101, %00000001
+    .byte %01001000, %00000000, %00000000, %00000001
+    .byte %01001000, %00000000, %00000000, %00000001
+    .byte %01011001, %01010101, %01010101, %01010101
+ENTS2:
+    .byte $FF     ;end of list
+
+
 
 ENTPOINTERS: ;load with offset from AREA data. Offset runs by 2s for word size.
             ;this shold work essentially the same as AREABANK, but in ROM not RAM.
