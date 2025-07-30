@@ -962,17 +962,17 @@ SCREENTRANLOOP:
         BEQ TransitionUp
         CMP #$02
         BEQ TransitionDown
-        BNE waitfordrawtocompleteST     ;change as more directions added ofc
+        JMP waitfordrawtocompleteST     ;change as more directions added ofc
     TransitionUp:
         DEC scrolly
         DEC scrolly
         INC playerdata+Entity::ypos
         INC playerdata+Entity::ypos
-        LDA playerdata+Entity::ypos
-        CMP #$00
+        LDA scrolly
+        CMP #$FD
         BEQ DoneTransitionUp
-        LDA #$FC
-        STA playerdata+Entity::ypos
+        ;LDA #$FC
+        ;STA playerdata+Entity::ypos
     DoneTransitionUp:
         LDX #$00
         JMP CopyPDtoEBLoopST
@@ -1009,18 +1009,68 @@ SCREENTRANLOOP:
     CheckEndScrollUp:
         LDA scrolly
         CMP #$00
-        BNE waitfordrawtocompleteST
+        BNE JumpTowaitfordrawtocompleteST
         JMP ResetScrollY
+    JumpTowaitfordrawtocompleteST:
+        JMP waitfordrawtocompleteST
     CheckEndScrollDown:
         LDA scrolly
         CMP #$F0
-        BNE waitfordrawtocompleteST
-    ResetScrollY:
-        LDA swap
+        BNE JumpTowaitfordrawtocompleteST
+    ;Execute at the end of screen transition
+    ResetScrollY:   ;Rename to reset nametable. Time to put the new level in NT1 and clear NT2.   
+        LDA swap    ;should I swap and stay in second nametable or rewrite new map to first nametable and only use second on transitions?
         EOR #$02
         STA swap
         LDA #$00
         STA scrolly
+    MoveNAtoLevelStruct:
+        LDA nextarea+Area::selfaddr1
+        STA level+Area::selfaddr1
+        LDA nextarea+Area::selfaddr2
+        STA level+Area::selfaddr2
+        LDA nextarea+Area::btaddr1
+        STA level+Area::btaddr1
+        LDA nextarea+Area::btaddr2
+        STA level+Area::btaddr2
+        LDA nextarea+Area::cmaddr1
+        STA level+Area::cmaddr1
+        LDA nextarea+Area::cmaddr2
+        STA level+Area::cmaddr2
+        LDA nextarea+Area::entaddr1
+        STA level+Area::entaddr1
+        LDA nextarea+Area::entaddr2
+        STA level+Area::entaddr2
+
+        LDA $2000
+        AND #%01111111
+        STA $2000
+        LDA #$00
+        STA $2001
+        LDA $2002
+        LDA #$20
+        STA $2006           ;PPUADDR      $2000 for nametable1
+        LDA #$00
+        STA $2006           ;PPUADDR
+    ResetNametables:
+        LDA level+Area::btaddr1
+        STA btptr
+        LDA level+Area::btaddr2
+        STA btptr+1
+        JSR LoadNametable
+        LDA #$23
+        STA $2006           ;PPUADDR      nametable1 attribute layer
+        LDA #$C0
+        STA $2006           ;PPUADDR
+        LDA #$00
+        STA bgpalette
+        JSR LoadAttributes  
+        LDA #$1E
+        STA $2001
+        LDA $2000
+        ORA #%10000000
+        STA $2000
+
         LDA #$01                    ;set gamestate to main game
         STA gamestate
         ;Finally add the new area entities
@@ -1030,6 +1080,16 @@ SCREENTRANLOOP:
         LDA nextarea+Area::entaddr2
         STA entptr+1
         JSR LoadEntitiesFromROM
+    ClearNextAreaStruct:
+        LDA #$00
+        STA nextarea+Area::selfaddr1
+        STA nextarea+Area::selfaddr2
+        STA nextarea+Area::btaddr1
+        STA nextarea+Area::btaddr2
+        STA nextarea+Area::cmaddr1
+        STA nextarea+Area::cmaddr2
+        STA nextarea+Area::entaddr1
+        STA nextarea+Area::entaddr2
 
         JMP waitfordrawtocomplete   ;back to main GAMELOOP
     waitfordrawtocompleteST:
@@ -1169,6 +1229,8 @@ PlayerCollisionDetection:
             LDA (level+Area::selfaddr1), y  ;exit id is the selfid of the next area, which should also be the offset into the AREABANK array
             STA nextareaid  ;get id of next area 
             JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
+            ;LDA #$EF
+            ;STA playerdata+Entity::ypos
             LDA #$06        ;Load next area game state
             STA gamestate
             ;LDA collreturnval
@@ -3245,12 +3307,56 @@ LoadNextArea:
     STA $2000
     LDA #$00
     STA $2001
+    LDA exitdir
+    CMP #$01
+    BEQ FillNametablesUp
+    CMP #$02
+    BEQ FillNametablesDown
+    JMP FillNametablesDown
+FillNametablesUp:
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$28
+    STA $2006           ;PPUADDR      $2000 for nametable1
+    LDA #$00
+    STA $2006           ;PPUADDR
+
+    LDA level+Area::btaddr1
+    STA btptr
+    LDA level+Area::btaddr2
+    STA btptr+1
+    JSR LoadNametable
+    LDA #$20
+    STA $2006           ;PPUADDR      $2800 for nametable 2
+    LDA #$00
+    STA $2006           ;PPUADDR
+
+    LDA nextarea+Area::btaddr1
+    STA btptr
+    LDA nextarea+Area::btaddr2
+    STA btptr+1
+    JSR LoadNametable
+
+    LDA #$23
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+    LDA #$00
+    STA bgpalette
+    JSR LoadAttributes  
+    LDA #$2B
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+    LDA #$00
+    STA bgpalette
+    JSR LoadAttributes ;currently not changing anything about the attributes
+    JMP FillCollMap
+FillNametablesDown:
     LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
     LDA #$20
     STA $2006           ;PPUADDR      $2000 for nametable1
     LDA #$00
     STA $2006           ;PPUADDR
-FillNametables:
     LDA level+Area::btaddr1
     STA btptr
     LDA level+Area::btaddr2
@@ -3281,6 +3387,7 @@ FillNametables:
     LDA #$00
     STA bgpalette
     JSR LoadAttributes ;currently not changing anything about the attributes
+
 FillCollMap:
     LDA nextarea+Area::cmaddr1
     STA cmptr
