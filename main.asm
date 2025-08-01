@@ -15,7 +15,7 @@
 ;Can define game constants here, such as a global structure or variables
 ;Game Constants (make sure to use #CONSTANT when calling for value, not address)
 GRAVITY         = $02
-JUMPFORCE       = $28
+JUMPFORCE       = $2C
 TERMINALVEL     = $04
 ;;; PPU registers.
 PPUCTRL         = $2000
@@ -92,6 +92,8 @@ ENTITIES        = $0600
     btaddr2     .byte
     cmaddr1     .byte
     cmaddr2     .byte
+    paladdr1    .byte
+    paladdr2    .byte
     entaddr1    .byte
     entaddr2    .byte
 .endstruct
@@ -124,14 +126,15 @@ metatile:           .res .sizeof(Metatile)          ;8b
 entitybuffer:       .res .sizeof(Entity)            ;12b
 blockrow:           .res 16
 spritemem:          .res 2
-level:              .res .sizeof(Area)              ;8b
-nextarea:           .res .sizeof(Area)              ;8b
+level:              .res .sizeof(Area)              ;10b
+nextarea:           .res .sizeof(Area)              ;10b
 nextareaid:         .res 1
 ptr:                .res 2
 ptr2:               .res 2
 bgpalette:          .res 1
 btptr:              .res 2
 cmptr:              .res 2
+palptr:             .res 2
 entptr:             .res 2
 exitdir:            .res 1      ;1 - up, 2 - down, 3 - left, 4 - right
 
@@ -211,7 +214,7 @@ INITIALIZETITLESCREEN:
     STA $2006           ;PPUADDR
     LDA #%01010101
     STA bgpalette
-    JSR LoadAttributes
+    JSR LoadSingleAttributes
     JSR DrawText
 
 ;Clear register and set palette address
@@ -970,8 +973,8 @@ SCREENTRANLOOP:
         INC playerdata+Entity::ypos
         LDA scrolly
         CMP #$FD
-        BEQ DoneTransitionUp
-        ;LDA #$FC
+        BNE DoneTransitionUp
+        ;LDA #$80
         ;STA playerdata+Entity::ypos
     DoneTransitionUp:
         LDX #$00
@@ -1010,6 +1013,8 @@ SCREENTRANLOOP:
         LDA scrolly
         CMP #$00
         BNE JumpTowaitfordrawtocompleteST
+        LDA #$DF
+        STA playerdata+Entity::ypos
         JMP ResetScrollY
     JumpTowaitfordrawtocompleteST:
         JMP waitfordrawtocompleteST
@@ -1019,9 +1024,9 @@ SCREENTRANLOOP:
         BNE JumpTowaitfordrawtocompleteST
     ;Execute at the end of screen transition
     ResetScrollY:   ;Rename to reset nametable. Time to put the new level in NT1 and clear NT2.   
-        LDA swap    ;should I swap and stay in second nametable or rewrite new map to first nametable and only use second on transitions?
-        EOR #$02
-        STA swap
+        ;LDA swap    ;should I swap and stay in second nametable or rewrite new map to first nametable and only use second on transitions?
+        ;EOR #$02
+        ;STA swap
         LDA #$00
         STA scrolly
     MoveNAtoLevelStruct:
@@ -1037,6 +1042,10 @@ SCREENTRANLOOP:
         STA level+Area::cmaddr1
         LDA nextarea+Area::cmaddr2
         STA level+Area::cmaddr2
+        LDA nextarea+Area::paladdr1
+        STA level+Area::paladdr1
+        LDA nextarea+Area::paladdr2
+        STA level+Area::paladdr2
         LDA nextarea+Area::entaddr1
         STA level+Area::entaddr1
         LDA nextarea+Area::entaddr2
@@ -1062,8 +1071,10 @@ SCREENTRANLOOP:
         STA $2006           ;PPUADDR      nametable1 attribute layer
         LDA #$C0
         STA $2006           ;PPUADDR
-        LDA #$00
-        STA bgpalette
+        LDA level+Area::paladdr1
+        STA palptr
+        LDA level+Area::paladdr2
+        STA palptr+1
         JSR LoadAttributes  
         LDA #$1E
         STA $2001
@@ -1164,8 +1175,8 @@ PlayerCollisionDetection:
             LDA playerdata+Entity::ypos
             CMP #$00    ;Top of screen?
             BEQ ExitUp
-            CMP #$FF
-            BEQ ExitUp
+            ;CMP #$FF
+            ;BEQ ExitUp
             LSR         ;divide by 16
             LSR         ;meta y of player's head
             LSR
@@ -1229,8 +1240,10 @@ PlayerCollisionDetection:
             LDA (level+Area::selfaddr1), y  ;exit id is the selfid of the next area, which should also be the offset into the AREABANK array
             STA nextareaid  ;get id of next area 
             JSR SetupNextArea   ;populate "nextarea" struct for draw routine.
-            ;LDA #$EF
+            ;LDA #$DF
             ;STA playerdata+Entity::ypos
+            LDA #$F0        ;set scrolly back 16px to account for only 15 horizontal rows
+            STA scrolly
             LDA #$06        ;Load next area game state
             STA gamestate
             ;LDA collreturnval
@@ -2534,9 +2547,9 @@ InitializeFirstScreen:
     LDA AREABANK+1
     STA level+Area::selfaddr2
     ;block table
-    LDA level+Area::selfaddr1 
+    LDA level+Area::selfaddr1
     CLC
-    ADC #$08
+    ADC #$8A
     STA level+Area::btaddr1     ;OMG I can't believe on a certain write, this is landing dead on #$00, which is putting the ptr one page off.
     LDA level+Area::selfaddr2
     STA level+Area::btaddr2
@@ -2548,18 +2561,29 @@ IncrementBTHightByte:
 InitializeCollisionMap:
     LDA level+Area::selfaddr1
     CLC
-    ADC #$68
+    ADC #$0E
     STA level+Area::cmaddr1
     LDA level+Area::selfaddr2
     STA level+Area::cmaddr2
     BCS IncrementCMHighByte
-    JMP InitializeEntities
+    JMP InitializePaletteMap
 IncrementCMHighByte:
     INC level+Area::cmaddr2
+InitializePaletteMap:
+    LDA level+Area::selfaddr1
+    CLC
+    ADC #$4A
+    STA level+Area::paladdr1
+    LDA level+Area::selfaddr2
+    STA level+Area::paladdr2
+    BCS IncrementPMHighByte
+    JMP InitializeEntities
+IncrementPMHighByte:
+    INC level+Area::paladdr2
 InitializeEntities:
     LDA level+Area::selfaddr1
     CLC
-    ADC #$A4 ;#$A0
+    ADC #$0B
     STA level+Area::entaddr1
     LDA level+Area::selfaddr2
     STA level+Area::entaddr2
@@ -2579,7 +2603,7 @@ InitializePlayer:
     STA playerdata+Entity::xpos
     STA ENTITIES, x ;xpos
     INX   
-    LDA #$00
+    LDA #$10
     STA playerdata+Entity::ypos
     STA ENTITIES, x ;ypos
     INX
@@ -2646,18 +2670,24 @@ InitializePlayer:
     STA cmptr
     LDA level+Area::cmaddr2
     STA cmptr+1
+    LDA level+Area::paladdr1
+    STA palptr
+    LDA level+Area::paladdr2
+    STA palptr+1
     LDA level+Area::entaddr1
     STA entptr
     LDA level+Area::entaddr2
     STA entptr+1
     JSR LoadEntitiesFromROM
+    LDA #$00
+    STA colltemp1
     JSR LoadNametable
     LDA #$23
     STA $2006           ;PPUADDR      nametable1 attribute layer
     LDA #$C0
     STA $2006           ;PPUADDR
-    LDA #$00
-    STA bgpalette
+    ;LDA #$00
+    ;STA bgpalette
     JSR LoadAttributes
     JSR LoadCollMap
 
@@ -2862,24 +2892,24 @@ SetupNextArea:  ;gets pointer data from ROM (AREA0, AREA1, ...) and stores it in
     INX
     LDA AREABANK, x
     STA nextarea+Area::selfaddr2
-    LDY #$05                            ;First byte of "contents" section in AREA array. Contains offset of the block table
+    LDY #$07                            ;First byte of "contents" section in AREA array. Contains offset of the entities table
     LDA (nextarea+Area::selfaddr1), y   ;get block table offset (probably $07)
-    STA nextarea+Area::btaddr1          ;use as variable for a moment
+    STA nextarea+Area::entaddr1          ;use as variable for a moment
     LDA nextarea+Area::selfaddr1
     CLC
-    ADC nextarea+Area::btaddr1
-    STA nextarea+Area::btaddr1
+    ADC nextarea+Area::entaddr1
+    STA nextarea+Area::entaddr1
     ;TAY                                 ;put that value into X
     ;LDA (nextarea+Area::selfaddr1), y     ;get the value of X added to lowbyte of the array address. Should be first byte in block table.
     ;STA nextarea+Area::btaddr1
     LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
-    STA nextarea+Area::btaddr2
-    BCS NAIncrementHighByteBT
+    STA nextarea+Area::entaddr2
+    BCS NAIncrementHighByteENT          ;if carry was set from adding the low byte, that means it crossed a page
     JMP NAContinueToLoadCM
-NAIncrementHighByteBT:
-    INC nextarea+Area::btaddr2
+NAIncrementHighByteENT:
+    INC nextarea+Area::entaddr2
 NAContinueToLoadCM:
-    LDY #$06
+    LDY #$08
     LDA (nextarea+Area::selfaddr1), y   ;get collmap offset, repeat process
     STA nextarea+Area::cmaddr1          ;use as variable for a moment
     LDA nextarea+Area::selfaddr1
@@ -2889,23 +2919,37 @@ NAContinueToLoadCM:
     LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
     STA nextarea+Area::cmaddr2
     BCS NAIncrementHighByteCM
-    JMP NAContinueToLoadENT
+    JMP NAContinueToLoadPM
 NAIncrementHighByteCM:
     INC nextarea+Area::cmaddr2
-NAContinueToLoadENT:
-    LDY #$07
-    LDA (nextarea+Area::selfaddr1), y   ;get entity table offset, repeat process
-    STA nextarea+Area::entaddr1          ;use as variable for a moment
+NAContinueToLoadPM:
+    LDY #$09
+    LDA (nextarea+Area::selfaddr1), y   ;get collmap offset, repeat process
+    STA nextarea+Area::paladdr1          ;use as variable for a moment
     LDA nextarea+Area::selfaddr1
     CLC
-    ADC nextarea+Area::entaddr1
-    STA nextarea+Area::entaddr1
+    ADC nextarea+Area::paladdr1
+    STA nextarea+Area::paladdr1
+    LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
+    STA nextarea+Area::paladdr2
+    BCS NAIncrementHighBytePM
+    JMP NAContinueToLoadBT
+NAIncrementHighBytePM:
+    INC nextarea+Area::paladdr2
+NAContinueToLoadBT:
+    LDY #$0A
+    LDA (nextarea+Area::selfaddr1), y   ;get entity table offset, repeat process
+    STA nextarea+Area::btaddr1          ;use as variable for a moment
+    LDA nextarea+Area::selfaddr1
+    CLC
+    ADC nextarea+Area::btaddr1
+    STA nextarea+Area::btaddr1
     LDA nextarea+Area::selfaddr2        
-    STA nextarea+Area::entaddr2
-    BCS NAIncrementHighByteENT
+    STA nextarea+Area::btaddr2
+    BCS NAIncrementHighByteBT
     JMP NAReturn
-NAIncrementHighByteENT:
-    INC nextarea+Area::entaddr2
+NAIncrementHighByteBT:
+    INC nextarea+Area::btaddr2
 NAReturn:
     ;Done. "nextarea" struct is populated.
     PLA
@@ -2932,7 +2976,7 @@ LoadBlankNametable:
     TYA
     PHA
 
-    LDA #$08
+    LDA #$D0
     LDX #$04
     LDY #$00
 BlankNTLoop:
@@ -2963,20 +3007,54 @@ FinishedBlankWrite:
 
 
 LoadNametable:  ;copied to scratch
+                ;need an IN argument to hold whether Loading for "level" or "nextarea"
         PHA
         TXA
         PHA
         TYA
         PHA
 
+        LDA colltemp1   ;00 for "level", 01 for "nextarea"
+        CMP #$01
+        BEQ UseNATileset
+    UseLevelTileset:
         ;load tileset pointer
-        LDA #<BGTILES0   ;high byte
+        LDA level+Area::selfaddr1
+        ;LDA #<BGTILES0   ;high byte
         STA ptr+0
-        LDA #>BGTILES0   ;low byte
+        LDA level+Area::selfaddr2
+        ;LDA #>BGTILES0   ;low byte
         STA ptr+1
+        LDY #$05
+        LDA (ptr), y
+        PHA
+        INY
+        LDA (ptr), y
+        STA ptr+1
+        PLA
+        STA ptr
+        JMP ContinueLoadNametable
+    UseNATileset:
+        ;load tileset pointer
+        LDA nextarea+Area::selfaddr1
+        ;LDA #<BGTILES0   ;high byte
+        STA ptr+0
+        LDA nextarea+Area::selfaddr2
+        ;LDA #>BGTILES0   ;low byte
+        STA ptr+1
+        LDY #$05
+        LDA (ptr), y
+        PHA
+        INY
+        LDA (ptr), y
+        STA ptr+1
+        PLA
+        STA ptr
+
+    ContinueLoadNametable:
         LDA #$00
         STA counter
-        STA colltemp1   ;use as a temp variable
+        STA colltemp1   ;reuse as a temp variable
         LDX #$00        ;outside counter goes to 15
         LDY #$00     
         TXA             ;$2007 write counter push to stack
@@ -2984,9 +3062,12 @@ LoadNametable:  ;copied to scratch
     ClearBlockRow:
         TYA
         PHA
-        LDA #$00
+        LDA #$FF
         LDY #$00
         LDX #$00
+        STA blockrow, y ;First entry in blockrow is FF so if a row is empty it will not display a blokc in first tile.
+        INY
+        LDA #$00
     ClearLoop:
         STA blockrow, y
         INY
@@ -2994,7 +3075,6 @@ LoadNametable:  ;copied to scratch
         BNE ClearLoop
         PLA
         TAY
-        
     GetBlocksInRow:
         LDA (btptr), y
         CMP #$FF
@@ -3020,6 +3100,8 @@ LoadNametable:  ;copied to scratch
         BCS checkB
     checkA:
         LDA blockrow, y ;What is first piece of block data
+        CMP #$FF
+        BEQ BuffCanvasA
         LSR
         LSR
         LSR
@@ -3033,6 +3115,8 @@ LoadNametable:  ;copied to scratch
         JMP BuffTileA
     checkB:
         LDA blockrow, y ;What is first piece of block data
+        CMP #$FF
+        BEQ JumpToBuffCanvasB
         LSR
         LSR
         LSR
@@ -3046,9 +3130,6 @@ LoadNametable:  ;copied to scratch
         JMP BuffTileB
     JumpToBuffCanvasB:
         JMP BuffCanvasB
-
-
-
 
     BuffTileA:          ;Put entire metatile into first 32 byte buffer
         LDA blockrow, y ;re-get current tile from blocktable
@@ -3093,20 +3174,28 @@ LoadNametable:  ;copied to scratch
     JumpToWrite:
         JMP WriteBuffer
     BuffCanvasA:    ;TODO: use a metatile struct and preload it before calling the buff routine so that it's only written once
-        LDA #$02         ;top left CHR address
+        TYA
+        PHA
+        LDY #$40
+        LDA (ptr), y         ;top left CHR address
         STA tilebufferA, x
         INX
-        LDA #$03         ;top right
+        INY
+        LDA (ptr), y         ;top right
         STA tilebufferA, x
         TXA
         CLC
         ADC #$10
         TAX
-        LDA #$13         ;bottom right
+        INY
+        LDA (ptr), y         ;bottom right
         STA tilebufferA, x
         DEX
-        LDA #$12        ;bottom left
+        INY
+        LDA (ptr), y        ;bottom left
         STA tilebufferA, x
+        PLA
+        TAY             ;retrieve previous Y index
         TXA
         SEC
         SBC #$10        ;reset x to starting value
@@ -3162,27 +3251,37 @@ LoadNametable:  ;copied to scratch
         INY             ;Incrememnt y because we drew a block
         JMP FillBuffer
     BuffCanvasB:
+        TYA
+        PHA
+
         TXA             
         PHA
         SEC
         SBC #$10        ;store iterative X then subtract 16 from X to get a new iterator for second buffer. Grab og X from stack when done.
         TAX
-        LDA #$02         ;top left CHR address
+        LDY #$40
+        LDA (ptr), y         ;top left CHR address
         STA tilebufferB, x
         INX
-        LDA #$03         ;top right
+        INY
+        LDA (ptr), y         ;top right
         STA tilebufferB, x
         TXA
         CLC
         ADC #$10
         TAX
-        LDA #$13         ;bottom right
+        INY
+        LDA (ptr), y         ;bottom right
         STA tilebufferB, x
         DEX
-        LDA #$12        ;bottom left
+        INY
+        LDA (ptr), y        ;bottom left
         STA tilebufferB, x
         PLA
         TAX
+        PLA
+        TAY
+
         INX             ;increment x twice for next loop
         INX
         CPX #$20
@@ -3241,25 +3340,62 @@ LoadNametable:  ;copied to scratch
         PLA
         RTS
 ;----------------------------------------------------------------------------------------
-
-;Set attribute register to $2006 BEFORE calling!!!
-LoadAttributes:
+LoadSingleAttributes:
+;To run using the palette map in the AREA array, we need two x counters and a y iterator. The y iterates though the palette map
+;and the "inside" counter runs to 
     PHA
     TXA
     PHA
     TYA
     PHA
-
+    ;set address before calling because there are two, one for each nametable
     ;LDA $2002       ;reset latch
     ;LDA #$23        ;High byte of $23CO address (attributes)
     ;STA $2006
     ;LDA #$C0        ;Low byte
     ;STA $2006
-    LDX #$40        ;Fill with 64b
+    LDX #$40        ;loop counter 64b
+    LDY #$00
     ;LDA #$00        ;Attribute value
-    LDA bgpalette
-LoadAttributesLoop:
+    LDA bgpalette   ;single palette chooser
+LoadSingleAttributesLoop:
     STA $2007
+    DEX
+    BNE LoadSingleAttributesLoop
+ReturnFromLoadSingleAttributes:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+
+
+
+;Set attribute register to $2006 BEFORE calling!!!
+LoadAttributes:
+;To run using the palette map in the AREA array, we need two x counters and a y iterator. The y iterates though the palette map
+;and the "inside" counter runs to 
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+    ;set address before calling because there are two, one for each nametable
+    ;LDA $2002       ;reset latch
+    ;LDA #$23        ;High byte of $23CO address (attributes)
+    ;STA $2006
+    ;LDA #$C0        ;Low byte
+    ;STA $2006
+    LDX #$40        ;loop counter
+    LDY #$00
+    ;LDA #$00        ;Attribute value
+    ;LDA bgpalette   ;single palette chooser
+LoadAttributesLoop:
+    LDA (palptr), y ;get palette info from palettemap
+    STA $2007
+    INY
     DEX
     BNE LoadAttributesLoop
 ReturnFromLoadAttributes:
@@ -3269,6 +3405,8 @@ ReturnFromLoadAttributes:
     TAX
     PLA
     RTS
+
+
 
 ;--*--*--*--*--*--*--*Load Collision Map subroutine*--*--*--*--*--*--*--*--*--*
 LoadCollMap:
@@ -3295,7 +3433,7 @@ ReturnFromLoadCollMap:
     RTS
 
 ;------------------------------Load NextArea to 2007-----------------------------------------
-LoadNextArea:
+LoadNextArea:   ;TODO: setup palptr for LoadAttributes
     PHA
     TXA
     PHA
@@ -3310,8 +3448,8 @@ LoadNextArea:
     LDA exitdir
     CMP #$01
     BEQ FillNametablesUp
-    CMP #$02
-    BEQ FillNametablesDown
+    ;CMP #$02
+    ;BEQ FillNametablesDown
     JMP FillNametablesDown
 FillNametablesUp:
     LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
@@ -3324,6 +3462,9 @@ FillNametablesUp:
     STA btptr
     LDA level+Area::btaddr2
     STA btptr+1
+    LDA #$00
+    STA colltemp1       ;use as a flag to toggle whether to pull tileset from level struct (00) or next area (01)
+
     JSR LoadNametable
     LDA #$20
     STA $2006           ;PPUADDR      $2800 for nametable 2
@@ -3334,21 +3475,32 @@ FillNametablesUp:
     STA btptr
     LDA nextarea+Area::btaddr2
     STA btptr+1
+    LDA #$01
+    STA colltemp1
+
     JSR LoadNametable
 
     LDA #$23
     STA $2006           ;PPUADDR      nametable1 attribute layer
     LDA #$C0
     STA $2006           ;PPUADDR
-    LDA #$00
-    STA bgpalette
+    LDA nextarea+Area::paladdr1
+    STA palptr
+    LDA nextarea+Area::paladdr2
+    STA palptr+1
+    ;LDA #$00
+    ;STA bgpalette
     JSR LoadAttributes  
     LDA #$2B
-    STA $2006           ;PPUADDR      nametable1 attribute layer
+    STA $2006           ;PPUADDR      nametable2 attribute layer
     LDA #$C0
     STA $2006           ;PPUADDR
-    LDA #$00
-    STA bgpalette
+    ;LDA #$00
+    ;STA bgpalette
+    LDA level+Area::paladdr1
+    STA palptr
+    LDA level+Area::paladdr2
+    STA palptr+1
     JSR LoadAttributes ;currently not changing anything about the attributes
     JMP FillCollMap
 FillNametablesDown:
@@ -3361,6 +3513,8 @@ FillNametablesDown:
     STA btptr
     LDA level+Area::btaddr2
     STA btptr+1
+    LDA #$00
+    STA colltemp1       ;set tempvar with flag for "level" struct tileset
     JSR LoadNametable
     LDA #$28
     STA $2006           ;PPUADDR      $2800 for nametable 2
@@ -3371,15 +3525,24 @@ FillNametablesDown:
     STA btptr
     LDA nextarea+Area::btaddr2
     STA btptr+1
+    LDA #$01            ;tileset flag
+    STA colltemp1
+
     JSR LoadNametable
 
     LDA #$23
     STA $2006           ;PPUADDR      nametable1 attribute layer
     LDA #$C0
     STA $2006           ;PPUADDR
-    LDA #$00
-    STA bgpalette
+    LDA level+Area::paladdr1
+    STA palptr
+    LDA level+Area::paladdr2
+    STA palptr+1
     JSR LoadAttributes  
+    LDA nextarea+Area::paladdr1
+    STA palptr
+    LDA nextarea+Area::paladdr2
+    STA palptr+1
     LDA #$2B
     STA $2006           ;PPUADDR      nametable1 attribute layer
     LDA #$C0
@@ -3443,6 +3606,7 @@ GetLineFeatures:
     INX
     LDA TEXTBANK, x
     STA $2006
+    INX
 DrawTextLoop:
     LDA TEXTBANK, x     ;sprite address
     CMP #$FE
@@ -3768,9 +3932,9 @@ PALETTE:  ;seems like background can only access last 4 palettes?   32b
 
     ;bg palettes
     .byte $0F, $06, $15, $18 ;palette 1  ;browns, golds, reds, bg1
-    .byte $0E, $27, $2A, $07 ;palette 2   ;crimson, red, pink    bullet/enemy
-    .byte $0E, $07, $1C, $37 ;palette 3  ;browns and blue - main char
-    .byte $0E, $13, $23, $33 ;palette 4   ;purples
+    .byte $0E, $27, $2A, $07 ;palette 2   
+    .byte $0E, $07, $1C, $37 ;palette 3  
+    .byte $0E, $2C, $17, $3A ;palette 4   
     
     ;TODO: potential for compressing again by half:
     ;If I have a row-ender, I don't need a Y value, so II can pack two blocks into one byte: X1{0000}X2{0000}
@@ -3798,27 +3962,16 @@ EXITS0:          ;$FF is no exit
     .byte $02   ;down   Exits have to be a multiple of 2
     .byte $FF   ;left
     .byte $FF   ;right
+TILESET0:
+    .word BGTILES0   ;BGTILES0
 CONTENTS0:
-    .byte $08   ;offset to blocktable
-    .byte $68   ;offset to collmap
-    .byte $A4   ;offset to entities
-BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all they need is position X{0000}  --Y{0000}-- Actually they don't need Y
-    .byte $00, $10, $27,      $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF   ;right bit = tile id
-    .byte $00,      $27,                                                             $F0, $FF   ;0 = block
-    .byte $00,      $27,                                                             $F0, $FF   ;7 = rope
-    .byte $00, $10, $20, $30, $40, $50,                                              $F0, $FF   ;8 = vine
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                     $50, $60, $70, $80, $90,                          $F0, $FF
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                               $A0, $B0,$C8, $D0, $E0, $F0, $FF                              
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
-;100 offset (100?)
+    .byte $0B   ;offset to entities
+    .byte $0E   ;offset to collmap
+    .byte $4A     ;offset to palette map
+    .byte $8A   ;offset to block table
+ENTS0:
+    .byte $84, $04       ;snake at (8, 4)
+    .byte $FF           ;end of list
 COLLMAP0: ;will reduce to 60 bytes
     .byte %01011000, %01010101, %01010101, %01010101
     .byte %01001000, %00000000, %00000000, %00000001
@@ -3835,9 +3988,39 @@ COLLMAP0: ;will reduce to 60 bytes
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01010101, %01010101, %01010101, %10010101
-ENTS0:
-    .byte $84, $04       ;snake at (8, 4)
-    .byte $FF           ;end of list
+PALMAP0:
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all they need is position X{0000}  --Y{0000}-- Actually they don't need Y
+    .byte $00, $10, $27,      $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF   ;right bit = tile id
+    .byte $00,      $27,                                                             $F0, $FF   ;0 = block
+    .byte $00,      $27,                                                             $F0, $FF   ;7 = rope
+    .byte $00, $10, $20, $30, $40, $50,                                              $F0, $FF   ;8 = vine
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                     $50, $60, $70, $80, $90,                          $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                               $A0, $B0,$C8, $D0, $E0, $F0, $FF                              
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
 
 AREA1:
 SELFID1:
@@ -3847,27 +4030,16 @@ EXITS1:
     .byte $FF   ;down
     .byte $FF   ;left
     .byte $FF   ;right
+TILESET1:
+    .word BGTILES0   ;BGTILES0
 CONTENTS1:
-    .byte $08   ;offset to blocktable (maybe unecessary if nothing is variable length before the block table)
-    .byte $5D   ;offset to collmap
-    .byte $99   ;offset to entities
-BLOCKTABLE1:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table, etc)
-    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                   $B0, $C0, $D0,      $F0, $FF
-    .byte $00,                                                                       $F0, $FF                              
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                               $70, $80, $90, $A0, $B0,                $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
-;+84 to collmap
+    .byte $0B   ;offset to entities
+    .byte $0E   ;offset to collmap
+    .byte $4A   ;offset to palette map
+    .byte $8A   ;offset to block table
+ENTS1:
+    .byte $ED, $00    ;the last piece @ (15,14)
+    .byte $FF        ;end of list
 ;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
 COLLMAP1:   ;60 bytes
     .byte %01010000, %01010101, %01010101, %10010101
@@ -3885,10 +4057,39 @@ COLLMAP1:   ;60 bytes
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01010101, %01010101, %01010101, %01010101
-ENTS1:
-    .byte $ED, $00    ;the last piece @ (15,14)
-    .byte $3D, $02    ;hat @ (3,14)
-    .byte $FF        ;end of list
+PALMAP1:
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+BLOCKTABLE1:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table, etc)
+    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                        $C8,           $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                   $B0, $C0, $D0,      $F0, $FF
+    .byte $00,                                                                       $F0, $FF                              
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                               $70, $80, $90, $A0, $B0,                $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
 
 AREA2:
 SELFID2:
@@ -3898,48 +4099,65 @@ EXITS2:
     .byte $00   ;down
     .byte $FF   ;left
     .byte $FF   ;right
+TILESET2:
+    .word BGTILES1   ;BGTILES0
 CONTENTS2:
-    .byte $08   ;offset to blocktable (maybe unecessary if nothing is variable length before the block table)
-    .byte $2A   ;offset to collmap
-    .byte $66   ;offset to entities
-BLOCKTABLE2:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table, etc)
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte                                                                                 $FF
-    .byte           $27,                                                                  $FF
-    .byte           $27,                                                                  $FF
-    .byte $00, $10, $27, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
-;+84 to collmap
-;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
-COLLMAP2:   ;60 bytes
-    .byte %01010000, %01010101, %01010101, %10010101
-    .byte %01000000, %00000000, %00000000, %10000001
-    .byte %01000000, %00000000, %00000000, %10000001
-    .byte %01000000, %00000000, %00000000, %10000001
-    .byte %01000000, %00000000, %00000000, %10000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000001, %01010001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000001, %01010101, %00000001
-    .byte %01001000, %00000000, %00000000, %00000001
-    .byte %01001000, %00000000, %00000000, %00000001
-    .byte %01011001, %01010101, %01010101, %01010101
+    .byte $0B   ;offset to entities
+    .byte $0C   ;offset to collmap
+    .byte $48   ;offset to palette map
+    .byte $88   ;offset to entities
 ENTS2:
     .byte $FF     ;end of list
-
-
+;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
+COLLMAP2:   ;60 bytes
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00001000, %00000000, %00000000, %00000000
+    .byte %01011001, %01010101, %01010101, %01010101
+PALMAP2:
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+BLOCKTABLE2:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table, etc)
+    .byte                                                                                 $FF   ;1
+    .byte                                                                                 $FF   ;1
+    .byte $07, $1A, $22, $33,                                    $B2, $C3,                $FF   ;7
+    .byte $05, $17, $2A,                $62, $73,                                         $FF   ;6
+    .byte $08, $15, $27, $3A,                                                   $E2, $F3, $FF   ;7
+    .byte $05, $18, $25, $39, $4D, $5A,                                                   $FF   ;7
+    .byte $05, $15, $28, $35, $45, $57, $6A,                                              $FF   ;8
+    .byte $05, $15, $25, $35, $45, $55, $67, $7A,                                         $FF   ;9
+    .byte $05, $15, $25, $35, $45, $55, $65, $77, $8A,                                    $FF   ;10
+    .byte $05, $15, $25, $35, $45, $55, $65, $75, $87, $9B, $AC, $BD, $CA,                $FF   ;14
+    .byte $05, $18, $25, $35, $45, $55, $65, $75, $85, $98, $A5, $B5, $C7, $DA,           $FF   ;15
+    .byte $05, $15, $28, $35, $48, $55, $65, $75, $85, $95, $A8, $B5, $C5, $D7, $EA,      $FF   ;16
+    .byte $05, $15, $25, $35, $45, $58, $65, $75, $85, $95, $A5, $B8, $C5, $D5, $E7, $FA, $FF   ;17
+    .byte $05, $15, $21, $35, $45, $55, $65, $75, $85, $95, $A5, $B5, $C8, $D5, $E5, $F7, $FF   ;17
+    .byte $06, $16, $20, $36, $46, $56, $66, $76, $86, $96, $A6, $B6, $C6, $D6, $E6, $F6, $FF   ;17
 
 ENTPOINTERS: ;load with offset from AREA data. Offset runs by 2s for word size.
             ;this shold work essentially the same as AREABANK, but in ROM not RAM.
@@ -3982,6 +4200,26 @@ BGTILES0:                       ;background tiles for world 0 (16 available) - t
     .byte $00, $00, $00, $00    ;0D
     .byte $00, $00, $00, $00    ;0E
     .byte $00, $00, $00, $00    ;0F
+    .byte $02, $02, $12, $13    ;10     canvas tile
+
+BGTILES1:                       ;background tiles for world 1 (extreior) (16 available) - tl, tr, bl, br
+    .byte $06, $07, $16, $17    ;00     rope
+    .byte $0C, $0D, $D0, $D0    ;01     door
+    .byte $08, $09, $18, $19    ;02     cloud1
+    .byte $0A, $0B, $1A, $1B    ;03     cloud2
+    .byte $1D, $1D, $1D, $1D    ;04     sky
+    .byte $1C, $1C, $1C, $1C    ;05     mountain face (solid yellow)
+    .byte $28, $29, $38, $39    ;06     ground
+    .byte $0E, $0F, $1C, $1F    ;07     M1 - right slope
+    .byte $2B, $2C, $1C, $3C    ;08     M2 - interior ridge
+    .byte $1F, $1E, $1C, $1C    ;09     M3 - plateau
+    .byte $1D, $1D, $0F, $1D    ;0A     M4 - right slope corner filler
+    .byte $1D, $3A, $3A, $3B    ;0B     M5 - left slope
+    .byte $2A, $1E, $1C, $1C    ;0C     M6 - peak
+    .byte $0F, $1D, $1F, $0F    ;0D     M7 - right low slope
+    .byte $00, $00, $00, $00    ;0E
+    .byte $00, $00, $00, $00    ;0F
+    .byte $1D, $1D, $1D, $1D    ;10     canvas tile - sky
 
 .segment "VECTORS"
     .word VBLANK
