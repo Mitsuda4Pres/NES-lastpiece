@@ -72,6 +72,7 @@ ENTITIES        = $0600
     ;any variables below this comment are not stored in ENTITIES RAM
     ;use for player variables since playerdata is maintained in zeropage
     velocity    .byte
+    health      .byte
 .endstruct
 
 .struct Metatile        ;8b
@@ -104,13 +105,13 @@ ENTITIES        = $0600
 .segment "ZEROPAGE"
 gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - cutscene, $05 - screen transition, $06 - PPUoff NT fill, $07 - transition to main game
 controller:         .res 1    ;reserve 1 byte for controller input
-drawcomplete:       .res 1
+drawcomplete:       .res 1      ;1 bit flag
 scrollx:            .res 1
 scrolly:            .res 1
 tilebufferA:        .res 32
 tilebufferB:        .res 32
-swap:               .res 1
-buttonflag:         .res 1
+swap:               .res 1      ;1 bit flag
+buttonflag:         .res 1      ;1 bit flag
 timer:              .res 1
 counter:            .res 1
 checkvar:           .res 1
@@ -120,10 +121,11 @@ colltemp3:          .res 1
 collreturnval:      .res 1
 animaframes:        .res 1
 totalsprites:       .res 1
-playerdata:         .res .sizeof(Entity)            ;12b
-playeroverbox:       .res 1
+playerdata:         .res .sizeof(Entity)            ;14b
+entcollisionret:   .res 3                          ;array to return the "ids" of collided entities
+playeroverbox:      .res 1
 metatile:           .res .sizeof(Metatile)          ;8b
-entitybuffer:       .res .sizeof(Entity)            ;12b
+entitybuffer:       .res .sizeof(Entity)            ;14b
 blockrow:           .res 16
 spritemem:          .res 2
 level:              .res .sizeof(Area)              ;10b
@@ -138,7 +140,7 @@ palptr:             .res 2
 entptr:             .res 2
 exitdir:            .res 1      ;1 - up, 2 - down, 3 - left, 4 - right
 
-;total zero page reserved: 164b (max 254)
+;total zero page reserved: 168b (max 254)
 
 .segment "CODE"
 
@@ -1934,6 +1936,83 @@ PlayerCollisionDetection:
             PLA
             RTS
 
+    CheckPlayerCollisionAgainstEntities:
+            PHA
+            TXA
+            PHA
+            TYA
+            PHA
+            LDX #$00
+            LDY #$00
+            LDA #$00
+        CheckAgainstEntitiesLoop:
+            TXA
+            CLC
+            ADC #$0C
+            TAX
+            LDA ENTITIES, x
+            CMP #$FF        ;$FF is end of list
+            BEQ EndCheckAgainstEntities
+        FirstXCheck:        ;is right side of player greater than left side of entity? If not, return.
+            INX             ;index entity's xpos
+            LDA playerdata+Entity::xpos
+            CLC
+            ADC #$0F        ;right side of character. Decrease to change right side of hitbox
+            CMP ENTITIES, x
+            BPL SecondXCheck    ;if plus, continue
+            DEX                 ;otherwise, move to next entity
+            JMP CheckAgainstEntitiesLoop
+        SecondXCheck:
+            LDA ENTITIES, x
+            CLC
+            ADC #$0F
+            STA colltemp1       ;get right side position of entity
+            LDA playerdata+Entity::xpos
+            CMP colltemp1
+            BMI FirstYCheck
+            DEX
+            JMP CheckAgainstEntitiesLoop
+        FirstYCheck:
+            INX
+            LDA playerdata+Entity::ypos
+            CLC
+            ADC #$0F
+            CMP ENTITIES, x
+            BPL SecondYCheck
+            DEX
+            DEX
+            JMP CheckAgainstEntitiesLoop
+        SecondYCheck:
+            LDA ENTITIES, x
+            CLC
+            ADC #$0F
+            STA colltemp1
+            LDA playerdata+Entity::ypos
+            CMP colltemp1
+            BMI EntityCollisionTrue
+            DEX
+            DEX
+            JMP CheckAgainstEntitiesLoop
+        EntityCollisionTrue:
+            DEX
+            DEX
+            LDA ENTITIES, x
+            STA entcollisionret, y          ;With this system, only the first 3 entities in the ENTITIES bank will get returned. 
+            INY                             ;It is very unlikely there will be three simultaneous sprite collisions in this game.
+            CPY #$03
+            BEQ ReturnFromCheckAgainstEntities
+            JMP CheckAgainstEntitiesLoop  
+        EndCheckAgainstEntities:            ;If end of list is reached before 3 hits occur (usual case)
+            LDA #$FF
+            STA entcollisionret, y
+        ReturnFromCheckAgainstEntities:
+            PLA
+            TAY
+            PLA
+            TAX
+            PLA
+            RTS
+
 EntityCollisionDetection:
     CheckEntityCollisionDown:
         CheckEntityCollisionDownStart: 
@@ -2540,6 +2619,18 @@ WriteAreaBankLoop:      ;Write all areas PRGROM addresses into RAM lookup table
     INX
     LDA #>AREA2
     STA AREABANK, x
+    INX
+    LDA #<AREA3
+    STA AREABANK, x
+    INX
+    LDA #>AREA3
+    STA AREABANK, x
+    INX
+    LDA #<AREA4
+    STA AREABANK, x
+    INX
+    LDA #>AREA4
+    STA AREABANK, x
     LDX #$00
 InitializeFirstScreen:
     LDA AREABANK                ;set AREA0 as current level
@@ -2660,7 +2751,8 @@ InitializePlayer:
     LDA #$FF
     STA ENTITIES, x
     INX
-
+    LDA #$03            ;i don't anticipate this changing
+    STA playerdata+Entity::health
 ;;----->>>>
     LDA level+Area::btaddr1
     STA btptr
@@ -2709,6 +2801,15 @@ InitializePlayer:
     PLA    
     RTS
 ;----------------------------------------------------------------
+
+InitializeGameOver:
+    ;Clear ENTITIES
+    ;Clear AREABANK
+    ;Clear TEXTBANK
+    ;Clear Nametable (loadBlankNametable)
+    ;Write some game over text with an option to restart
+
+
 ;Call as part of LoadNextArea
 LoadEntitiesFromROM:    
     PHA
@@ -3933,8 +4034,8 @@ PALETTE:  ;seems like background can only access last 4 palettes?   32b
     ;bg palettes
     .byte $0F, $06, $15, $18 ;palette 1  ;browns, golds, reds, bg1
     .byte $0E, $27, $2A, $07 ;palette 2   
-    .byte $0E, $07, $1C, $37 ;palette 3  
-    .byte $0E, $2C, $17, $3A ;palette 4   
+    .byte $0E, $2C, $00, $20 ;palette 3  ;black, blue, gray, white (cloud)  
+    .byte $0E, $2C, $17, $3A ;palette 4  ;black, blue, green, brown (exterior)   
     
     ;TODO: potential for compressing again by half:
     ;If I have a row-ender, I don't need a Y value, so II can pack two blocks into one byte: X1{0000}X2{0000}
@@ -3954,7 +4055,7 @@ TITLESCREEN:    ;3 lines of text   50b
 ;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
 ;--*--*--*--*--*--*--*--*--Game areas ROM--*--*--*--*--*--*--*--*--*--*--*
 ;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
-AREA0:  ;How to traverse these memory chunks. Start with a little "table of contents"? A few bytes to load as an adder to each segment?
+AREA0:  ;233 bytes, How to traverse these memory chunks. Start with a little "table of contents"? A few bytes to load as an adder to each segment?
 SELFID0:
     .byte $00
 EXITS0:          ;$FF is no exit
@@ -4022,12 +4123,12 @@ BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all
     .byte $00,                                                        $C8,           $F0, $FF
     .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C8, $D0, $E0, $F0, $FF
 
-AREA1:
+AREA1:  ;224 bytes
 SELFID1:
     .byte $02   ;RAM lookup table place number. By 2s for storing two-byte PRGROM addresses
 EXITS1:
     .byte $00   ;up
-    .byte $FF   ;down
+    .byte $06   ;down
     .byte $FF   ;left
     .byte $FF   ;right
 TILESET1:
@@ -4054,9 +4155,9 @@ COLLMAP1:   ;60 bytes
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000001, %01010101, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01010101, %01010101, %01010101, %01010101
+    .byte %01000010, %00000000, %00000000, %00000001
+    .byte %01000010, %00000000, %00000000, %00000001
+    .byte %01010110, %01010101, %01010101, %01010101
 PALMAP1:
     .byte %00000000, %00000000, %00000000, %00000000
     .byte %00000000, %00000000, %00000000, %00000000
@@ -4087,11 +4188,11 @@ BLOCKTABLE1:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table,
     .byte $00,                                                                       $F0, $FF
     .byte $00,                                                                       $F0, $FF
     .byte $00,                               $70, $80, $90, $A0, $B0,                $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
+    .byte $00,           $38,                                                        $F0, $FF
+    .byte $00,           $38,                                                        $F0, $FF
+    .byte $00, $10, $20, $38, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
 
-AREA2:
+AREA2:  ;288 bytes
 SELFID2:
     .byte $04   ;RAM lookup table place number. By 2s for storing two-byte PRGROM addresses
 EXITS2:
@@ -4105,7 +4206,7 @@ CONTENTS2:
     .byte $0B   ;offset to entities
     .byte $0C   ;offset to collmap
     .byte $48   ;offset to palette map
-    .byte $88   ;offset to entities
+    .byte $88   ;offset to block table
 ENTS2:
     .byte $FF     ;end of list
 ;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
@@ -4128,10 +4229,10 @@ COLLMAP2:   ;60 bytes
 PALMAP2:
     .byte %11111111, %11111111, %11111111, %11111111
     .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111010, %11111111, %10101111
+    .byte %11111111, %11111011, %11111110, %11111111
     .byte %11111111, %11111111, %11111111, %11111111
-    .byte %11111111, %11111111, %11111111, %11111111
-    .byte %11111111, %11111111, %11111111, %11111111
-    .byte %11111111, %11111111, %11111111, %11111111
+    .byte %11111111, %11111111, %11111111, %11111010
     .byte %11111111, %11111111, %11111111, %11111111
     .byte %11111111, %11111111, %11111111, %11111111
     .byte %11111111, %11111111, %11111111, %11111111
@@ -4158,6 +4259,144 @@ BLOCKTABLE2:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table,
     .byte $05, $15, $25, $35, $45, $58, $65, $75, $85, $95, $A5, $B8, $C5, $D5, $E7, $FA, $FF   ;17
     .byte $05, $15, $21, $35, $45, $55, $65, $75, $85, $95, $A5, $B5, $C8, $D5, $E5, $F7, $FF   ;17
     .byte $06, $16, $20, $36, $46, $56, $66, $76, $86, $96, $A6, $B6, $C6, $D6, $E6, $F6, $FF   ;17
+
+AREA3:  ;237 bytes
+SELFID3:
+    .byte $06   ;RAM lookup table place number. By 2s for storing two-byte PRGROM addresses
+EXITS3:
+    .byte $02   ;up
+    .byte $08   ;down
+    .byte $FF   ;left
+    .byte $FF   ;right
+TILESET3:
+    .word BGTILES0   ;BGTILES0
+CONTENTS3:
+    .byte $0B   ;offset to entities
+    .byte $0C   ;offset to collmap
+    .byte $48   ;offset to palette map
+    .byte $88   ;offset to block table
+ENTS3:
+    .byte $FF        ;end of list
+;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
+COLLMAP3:   ;60 bytes
+    .byte %01010110, %01010101, %01010101, %01010101
+    .byte %01000010, %00000000, %00000000, %00000001
+    .byte %01000001, %01000000, %00000000, %00000001
+    .byte %01000010, %01000000, %00000000, %00000001
+    .byte %01000010, %01000000, %00000000, %00000001
+    .byte %01010010, %01010101, %00000000, %00000001
+    .byte %01000010, %00000000, %00000000, %00000001
+    .byte %01000010, %00000000, %00000000, %00000001
+    .byte %01000010, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00010101, %00000001
+    .byte %01000000, %00000000, %00000000, %00010101
+    .byte %01000100, %00010001, %00000000, %00011001
+    .byte %01000000, %00000000, %00000000, %00001001
+    .byte %01000000, %00000000, %00000000, %00001001
+    .byte %01010101, %01010101, %01010101, %01011001
+PALMAP3:
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+BLOCKTABLE3:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table, etc)
+    .byte $00, $10, $20, $38, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
+    .byte $00,           $38,                                                        $F0, $FF
+    .byte $00,           $30, $40,                                                   $F0, $FF
+    .byte $00,           $38, $40,                                                   $F0, $FF
+    .byte $00,           $38, $40,                                                   $F0, $FF
+    .byte $00, $10,      $38, $40, $50, $60, $70,                                    $F0, $FF
+    .byte $00,           $38,                                                        $F0, $FF
+    .byte $00,           $38,                                                        $F0, $FF
+    .byte $00,           $38,                                                        $F0, $FF                              
+    .byte $00,                                         $90, $A0, $B0,                $F0, $FF
+    .byte $00,                                                             $D0, $E0, $F0, $FF
+    .byte $00,      $20,           $50,      $70,                          $D0, $E8, $F0, $FF
+    .byte $00,                                                                  $E8, $F0, $FF
+    .byte $00,                                                                  $E8, $F0, $FF
+    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E8, $F0, $FF
+
+AREA4:
+SELFID4:
+    .byte $08   ;RAM lookup table place number. By 2s for storing two-byte PRGROM addresses
+EXITS4:
+    .byte $06   ;up
+    .byte $FF   ;down
+    .byte $FF   ;left
+    .byte $FF   ;right
+TILESET4:
+    .word BGTILES0   ;BGTILES0
+CONTENTS4:
+    .byte $0B   ;offset to entities
+    .byte $0C   ;offset to collmap
+    .byte $48   ;offset to palette map
+    .byte $88   ;offset to block table
+ENTS4:
+    .byte $FF        ;end of list
+;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
+COLLMAP4:   ;60 bytes
+    .byte %01010101, %01010101, %01010101, %01011001
+    .byte %01000000, %00000000, %00000000, %00001001
+    .byte %01000000, %00000000, %00000000, %00001001
+    .byte %01000000, %00000000, %00000000, %00001001
+    .byte %01000000, %00000000, %00000010, %10101001
+    .byte %01000000, %00000000, %00101010, %00000001
+    .byte %01000000, %00000000, %00100010, %00000001
+    .byte %01000000, %00000000, %00000010, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01010101, %01010101, %01010101, %01010101
+PALMAP4:
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+BLOCKTABLE4:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table, etc)
+    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E8, $F0, $FF
+    .byte $00,                                                                  $E8, $F0, $FF
+    .byte $00,                                                                  $E8, $F0, $FF
+    .byte $00,                                                                  $E8, $F0, $FF
+    .byte $00,                                                   $B8, $C8, $D8, $E8, $F0, $FF
+    .byte $00,                                         $98, $A8, $B8,                $F0, $FF
+    .byte $00,                                         $98,      $B8,                $F0, $FF
+    .byte $00,                                                   $B8,                $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00,                                                                       $F0, $FF
+    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
+
+
 
 ENTPOINTERS: ;load with offset from AREA data. Offset runs by 2s for word size.
             ;this shold work essentially the same as AREABANK, but in ROM not RAM.
