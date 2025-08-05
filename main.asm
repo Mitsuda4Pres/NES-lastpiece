@@ -14,8 +14,8 @@
 
 ;Can define game constants here, such as a global structure or variables
 ;Game Constants (make sure to use #CONSTANT when calling for value, not address)
-GRAVITY         = $02
-JUMPFORCE       = $2C
+GRAVITY         = $03
+JUMPFORCE       = $50
 TERMINALVEL     = $04
 ;;; PPU registers.
 PPUCTRL         = $2000
@@ -53,7 +53,7 @@ ENTITIES        = $0600
     ypos        .byte
     state       .byte
     ;Player States
-    ;faceright faceleft      fall  climb   hurt  jump  walk standing
+    ;faceright faceleft      fall  climb   invinc  jump  walk standing
     ;0         0               0     0       0     0    0     0 -
     ;States for Treasure: 0 - untouched, 1 - retrieved
     ;States for Enemy: go by 2s and alternate for animation
@@ -277,7 +277,10 @@ FINISHINIT:
 
 GAMELOOP:
 UpdateTimer:
-    INC timer
+    LDA timer
+    CMP #$00
+    BEQ CheckForGameState
+    DEC timer
 CheckForGameState:       ;After player is written, see if game has entered "transition" state to move to next area
     LDA gamestate
     CMP #$05
@@ -467,10 +470,6 @@ finishcontrols: ;if on title screen, skip game logic
     JMP waitfordrawtocomplete
 
 processplayer:
-;Check collisions first, then write updates. SHould prevent ledge hiccup.
-;ledge hiccup problem is somewhere in collision code. Way down on pritority list.
-;Check collisions before or after processing enemy movements???
-
 FindMetaPosition:
     LDA playerdata+Entity::xpos
     LSR
@@ -485,8 +484,41 @@ FinishSetMetaY:
     LSR
     LSR
     STA playerdata+Entity::metay
+CheckHealth:
+    LDA playerdata+Entity::health
+    CMP #$01
+    BPL LoadState
+    LDA #$02        ;palette change
+    STA playerdata+Entity::pal
+    LDA #$00
+    STA playerdata+Entity::health
 LoadState:
+;check invincible state
+CheckInvincibleState:
+    LDA playerdata+Entity::state
+    AND #%00001000
+    CMP #%00001000
+    BNE CheckJumpState
+    LDA timer
+    CMP #$00
+    BEQ RemoveInvincibleState
+    LDA timer
+    LSR
+    LSR
+    LSR
+    BCS CheckJumpState
+    LDA playerdata+Entity::pal
+    EOR #$02
+    STA playerdata+Entity::pal
+    JMP CheckJumpState
+RemoveInvincibleState:
+    LDA playerdata+Entity::state
+    AND #%11110111
+    STA playerdata+Entity::state
+    LDA #$00
+    STA playerdata+Entity::pal
 ;check jump state
+CheckJumpState:
     LDA playerdata+Entity::state
     TAX
     AND #%00000100      ;check if jumping
@@ -503,6 +535,7 @@ JumpResolve:
 PlayerAscend:
     TAX
     CLC
+    LSR
     LSR
     LSR
     LSR
@@ -524,6 +557,7 @@ PlayerDescend:
     ADC #$01        ;add 1
     CLC
     LSR             ;divide by 4
+    LSR
     LSR
     CMP #TERMINALVEL
     BPL SetTerminalVelocity
@@ -654,6 +688,58 @@ CheckCollisions:;check for collisions from new position
     STA collreturnval
 ProcessCollisions:                  ;get return values from all collisions and process
     ;LDA collreturnval   ;00 nothing, 01 solid, 10 climbable, 11 damage!
+CheckAgainstEntities:
+    LDA #$00                ;clear return array
+    STA entcollisionret
+    STA entcollisionret+1
+    STA entcollisionret+2
+    JSR CheckPlayerCollisionAgainstEntities
+    LDA entcollisionret
+    CMP #$00
+    BEQ CheckOver
+    CMP #EntityType::Snake
+    BEQ HandleSnakeHit
+    JMP CheckOver
+HandleSnakeHit:
+    LDA playerdata+Entity::state
+    AND #%00001000
+    CMP #%00001000
+    BEQ CheckOver
+    LDA playerdata+Entity::state
+    AND #%11000000
+    CMP #%10000000
+    BEQ SnakeHitFacingRight
+SnakeHitFacingLeft:
+    INC playerdata+Entity::xpos
+    INC playerdata+Entity::xpos
+    INC playerdata+Entity::xpos
+    INC playerdata+Entity::xpos
+    INC playerdata+Entity::xpos
+    INC playerdata+Entity::xpos
+    INC playerdata+Entity::xpos
+    INC playerdata+Entity::xpos
+    DEC playerdata+Entity::health
+    LDA playerdata+Entity::state
+    ORA #%00001000          ;turn on invincible
+    STA playerdata+Entity::state
+    LDA #$8F
+    STA timer
+    JMP CheckOver
+SnakeHitFacingRight:
+    DEC playerdata+Entity::xpos
+    DEC playerdata+Entity::xpos
+    DEC playerdata+Entity::xpos
+    DEC playerdata+Entity::xpos
+    DEC playerdata+Entity::xpos
+    DEC playerdata+Entity::xpos
+    DEC playerdata+Entity::xpos
+    DEC playerdata+Entity::xpos
+    DEC playerdata+Entity::health
+    LDA playerdata+Entity::state
+    ORA #%00001000          ;turn on invincible
+    LDA #$8F
+    STA timer
+    STA playerdata+Entity::state
 CheckOver:
     JSR CheckPlayerCollisionOver
 ProcessLeft:
@@ -937,6 +1023,31 @@ waitfordrawtocomplete:
     JSR InitializeMainGame
 GoToGAMELOOP:
     JMP GAMELOOP
+
+
+;---------------------------------------------------------------------------------------------
+
+;---------------------------------------------------------------------------------------------
+
+
+;---------------------------------------------------------------------------------------------
+
+
+;---------------------------------------------------------------------------------------------
+
+
+
+;---------------------------------------------------------------------------------------------
+
+;---------------------------------------------------------------------------------------------
+
+
+;---------------------------------------------------------------------------------------------
+
+
+;---------------------------------------------------------------------------------------------
+;---------------------------------------------------------------------------------------------
+
 
 
 ;---------------SCREEN TRANSITION LOOP-----------------------------------------------------;
@@ -3951,6 +4062,7 @@ ClearMetatile:
     STA metatile+Metatile::ypos
 DoneDrawingMetatile:
 
+
     ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 CHECKENDSPRITE:
     LDA ENTITIES, x
@@ -3958,8 +4070,37 @@ CHECKENDSPRITE:
     BEQ DONESPRITE
     JMP LoadEntityLoop
 DONESPRITE:
-
-
+    LDA gamestate
+    CMP #$01
+    BNE DoneDrawHearts
+    LDA playerdata+Entity::health
+    CMP #$00
+    BEQ DoneDrawHearts
+DrawHearts:             ;$2F @ (D8, 16)
+    LDX #$D4
+    LDA #$00
+    STA counter
+DrawHeartsLoop:     ;y, spr, pal, x
+    LDA #$10
+    STA (spritemem), y
+    INY
+    LDA #$2F
+    STA (spritemem), y
+    INY
+    LDA #$02
+    STA (spritemem), y
+    INY
+    TXA
+    STA (spritemem), y
+    INY
+    CLC
+    ADC #$0A            ;increment the x position
+    TAX
+    INC counter         ;increment the counter
+    LDA counter
+    CMP playerdata+Entity::health
+    BMI DrawHeartsLoop  ;less than or equal to health, keep drawing
+DoneDrawHearts:
 ;DMA copy sprites
     LDA #$00
     STA $2003 ;reset counter
@@ -4028,7 +4169,7 @@ PALETTE:  ;seems like background can only access last 4 palettes?   32b
     ;sprite palettes     
     .byte $0E, $17, $1C, $37 ;palette 3  ;browns and blue - main char
     .byte $0E, $1C, $2B, $39 ;palette 2  ;pastel green, blue-green, blue
-    .byte $0A, $05, $26, $30 ;palette 3  ;green, crimson, pink, white
+    .byte $0E, $26, $30, $05 ;palette 3  ;green, crimson, pink, white
     .byte $0E, $13, $23, $33 ;palette 4   ;purples 
 
     ;bg palettes
