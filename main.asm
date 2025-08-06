@@ -163,11 +163,11 @@ RESET:
 
     JSR WAITFORVBLANK
 
-    TXA
+    ;TXA
     LDA #$00
     STA gamestate
 
-;LDX #$00 before calling from wild
+    LDX #$00 ;before calling from wild
 CLEARMEM:
     STA $0000, x    ;zeroing out the memory ranges. X is indexing through each block. when X incs to 1, address= $0001 etc
     STA $0100, x
@@ -283,15 +283,26 @@ UpdateTimer:
     DEC timer
 CheckForGameState:       ;After player is written, see if game has entered "transition" state to move to next area
     LDA gamestate
+    CMP #$03            ;game over
+    BEQ HandleGameOver
     CMP #$05
     BEQ JumpToScreenTransition
     CMP #$06
     BNE DoneCheckForGameState
     JSR LoadNextArea
+    JMP waitfordrawtocomplete
 JumpToScreenTransition:
     JMP SCREENTRANLOOP   ;waitfordrawtocompleteST   ;do I need to do jump to a specific part of the loop?
-DoneCheckForGameState:
 
+HandleGameOver:
+    LDA timer
+    CMP #$00
+    BEQ JumpToInitGameOver
+    JMP waitfordrawtocomplete
+JumpToInitGameOver:
+    JSR InitializeGameOver
+
+DoneCheckForGameState:
 INITSPRITES:
     LDY #$00
     LDA #$FF
@@ -416,10 +427,13 @@ checkstart:
     BEQ checka
     LDA gamestate
     CMP #$00
-    BNE checka  ;eventually put PAUSE function here
+    BEQ loadmaingame
+    CMP #$03
+    BEQ loadmaingame
+    JMP checka  ;eventually put PAUSE function here
+loadmaingame:
     LDA #$07
     STA gamestate   ;if on title screen, change state to main game.
-    ;JMP CLEARMEM
     JMP waitfordrawtocomplete
 checka:
     LDA controller
@@ -684,8 +698,6 @@ PlayerIdle:
     STA playerdata+Entity::brspr
 
 CheckCollisions:;check for collisions from new position
-    LDA #$00
-    STA collreturnval
 ProcessCollisions:                  ;get return values from all collisions and process
     ;LDA collreturnval   ;00 nothing, 01 solid, 10 climbable, 11 damage!
 CheckAgainstEntities:
@@ -719,6 +731,9 @@ SnakeHitFacingLeft:
     INC playerdata+Entity::xpos
     INC playerdata+Entity::xpos
     DEC playerdata+Entity::health
+    LDA playerdata+Entity::health
+    CMP #$00
+    BEQ Dead
     LDA playerdata+Entity::state
     ORA #%00001000          ;turn on invincible
     STA playerdata+Entity::state
@@ -735,12 +750,34 @@ SnakeHitFacingRight:
     DEC playerdata+Entity::xpos
     DEC playerdata+Entity::xpos
     DEC playerdata+Entity::health
+    LDA playerdata+Entity::health
+    CMP #$00
+    BEQ Dead
     LDA playerdata+Entity::state
     ORA #%00001000          ;turn on invincible
     LDA #$8F
     STA timer
     STA playerdata+Entity::state
+    JMP CheckOver
+Dead:
+    LDA #$03
+    STA gamestate
+    LDA #$08
+    STA playerdata+Entity::tlspr
+    LDA #$09
+    STA playerdata+Entity::trspr
+    LDA #$18
+    STA playerdata+Entity::blspr
+    LDA #$19
+    STA playerdata+Entity::brspr
+    LDA #$8F
+    STA timer
+    JMP EndProcessPlayer
+
 CheckOver:
+    LDA #$00
+    STA collreturnval
+
     JSR CheckPlayerCollisionOver
 ProcessLeft:
     JSR CheckPlayerCollisionLeft
@@ -792,11 +829,12 @@ ProcessUp:
     BEQ HandleClimbableUp
     CMP #%01000000      ;solid
     BEQ HandleSolidUp
+    CMP #%11000000
+    BEQ HandleDamagingUp
     CMP #%00000000
     BEQ HandleNothingUp
     JMP ProcessDown
 HandleClimbableUp:
-    ;no up exits yet
     LDA #$01
     STA playerdata+Entity::env
     JMP ProcessDown
@@ -813,6 +851,19 @@ HandleSolidUp:
     ADC #$10
     STA playerdata+Entity::ypos
     JMP EndProcessPlayer
+HandleDamagingUp:
+    DEC playerdata+Entity::health
+    LDA playerdata+Entity::health
+    CMP #$00
+    BEQ DeadU
+    LDA playerdata+Entity::state
+    ORA #%00001000          ;turn on invincible
+    LDA #$8F
+    STA timer
+    STA playerdata+Entity::state
+    JMP EndProcessPlayer
+DeadU:
+    JMP Dead
 HandleNothingUp:
     ;LDA playerdata+Entity::state
     ;AND #%00010000      ;is climbing?
@@ -1054,8 +1105,6 @@ GoToGAMELOOP:
 ;When switching screens, get out of game loop entirely and use SCREENTRANLOOP
 ;Both PPU nametables should be loaded up by using the TransitionScreen BG loading subroutine
 SCREENTRANLOOP:
-        NOP
-        NOP
     InitSpritesST:
         LDY #$00
         LDA #$FF
@@ -1274,10 +1323,11 @@ PlayerCollisionDetection:
             PHA
             TYA
             PHA
+
             NOP
             NOP
             NOP
-            
+
             LDA playerdata+Entity::xpos
             CLC
             ADC #$01    ;one pixel in from left edge - x1
@@ -1397,23 +1447,12 @@ PlayerCollisionDetection:
             CMP #$01            ;is solid
             BEQ ReturnSolidU     ;if x1 or x2 is over solid, we can stop here
             ;CMP #$11            ;if x1 or x2 is over damaging, we can resolve?
-            ;BEQ SetX1Damaging
-            ;JMP ReturnFromCollisionUp
+            ;BEQ ReturnDamagingU
         ContinueResolveU:       ;TODO: check accuracy of this test for UP
             LDA colltemp3       ;holding whether we checked x1 or x2
             CMP #$01            ;if both points checked and no solid below, we must be falling
             BNE TestX2U
-            ;LDA playerdata+Entity::env
-            ;AND #%00010000
-            ;CMP #%00010000
-            ;BEQ ReturnClimbableU
             JMP ReturnFromCollisionUp
-        SetClimbableU:
-            ;LDA playerdata+Entity::env
-            ;ORA #%00000001
-            ;STA playerdata+Entity::env
-            JMP ContinueResolveU
-        ;vv bypassing this function for now vv
         ReturnClimbableU:
             LDA collreturnval
             ORA #%10000000
@@ -1427,6 +1466,11 @@ PlayerCollisionDetection:
             LDA collreturnval
             ORA #%01000000        ;solid in up position
             AND #%01111111        ;for 01 into top 2 bits 01xxxxxx
+            STA collreturnval
+            JMP ReturnFromCollisionUp
+        ReturnDamagingU:
+            LDA collreturnval
+            ORA #%11000000
             STA collreturnval
         ReturnFromCollisionUp:
             LDA #$00
@@ -1565,8 +1609,8 @@ PlayerCollisionDetection:
         Resolve:
             CMP #%00000001
             BEQ ReturnSolid     ;if x1 or x2 is over solid, we can stop here
-            ;CMP #$11            ;if x1 or x2 is over damaging, we can resolve?
-            ;BEQ SetX1Damaging
+            CMP #$11            ;if x1 or x2 is over damaging, we can resolve?
+            BEQ ReturnSolid
             CMP #%00000010            ;climbable?
             BEQ ReturnClimbable
         ContinueResolve:
@@ -1704,6 +1748,8 @@ PlayerCollisionDetection:
         ResolveL:
             CMP #%00000001  ;solid?
             BEQ ReturnSolidL
+            CMP #%00000011
+            BEQ ReturnSolidL
         ContinueResolveL:
             LDA checkvar
             CMP #$01
@@ -1827,6 +1873,8 @@ PlayerCollisionDetection:
             AND #%00000011 ;the bit set to the left of three
         ResolveR:
             CMP #%00000001  ;solid?
+            BEQ ReturnSolidR
+            CMP #%00000011  ;stalactites only damage on UP collision?
             BEQ ReturnSolidR
         ContinueResolveR:
             LDA checkvar
@@ -2066,29 +2114,39 @@ PlayerCollisionDetection:
             BEQ EndCheckAgainstEntities
         FirstXCheck:        ;is right side of player greater than left side of entity? If not, return.
             INX             ;index entity's xpos
+            LDA ENTITIES, x
+            CLC
+            ADC #$02        ;enemy hitbox
+            STA colltemp1
             LDA playerdata+Entity::xpos
             CLC
-            ADC #$0F        ;right side of character. Decrease to change right side of hitbox
-            CMP ENTITIES, x
+            ADC #$0D        ;right side of character. Decrease to change right side of hurtbox
+            CMP colltemp1     ;change enemy hitbox
             BPL SecondXCheck    ;if plus, continue
             DEX                 ;otherwise, move to next entity
             JMP CheckAgainstEntitiesLoop
         SecondXCheck:
             LDA ENTITIES, x
             CLC
-            ADC #$0F
+            ADC #$0E
             STA colltemp1       ;get right side position of entity
             LDA playerdata+Entity::xpos
+            CLC
+            ADC #$03            ;hurtbox 3px in
             CMP colltemp1
             BMI FirstYCheck
             DEX
             JMP CheckAgainstEntitiesLoop
         FirstYCheck:
             INX
+            LDA ENTITIES, x
+            CLC
+            ADC #$06        ;top side hitbox, snakes are low to ground. Will need a hitbox value for different enemiess
+            STA colltemp1
             LDA playerdata+Entity::ypos
             CLC
-            ADC #$0F
-            CMP ENTITIES, x
+            ADC #$0D            ;hurtbox val, 3px in
+            CMP colltemp1
             BPL SecondYCheck
             DEX
             DEX
@@ -2096,9 +2154,11 @@ PlayerCollisionDetection:
         SecondYCheck:
             LDA ENTITIES, x
             CLC
-            ADC #$0F
+            ADC #$0E
             STA colltemp1
             LDA playerdata+Entity::ypos
+            CLC
+            ADC #$03        ;hurtbox 3px in
             CMP colltemp1
             BMI EntityCollisionTrue
             DEX
@@ -2241,8 +2301,8 @@ EntityCollisionDetection:
         EResolve:
             CMP #$01
             BEQ EReturnSolid     ;if x1 or x2 is over solid, we can stop here
-            ;CMP #$11            ;if x1 or x2 is over damaging, we can resolve?
-            ;BEQ SetX1Damaging
+            CMP #$03            ;if x1 or x2 is over damaging, we can resolve?
+            BEQ EReturnSolid
         EContinueResolve:
             LDA colltemp3       ;holding whether we checked x1 or x2
             CMP #$01            ;if both points checked and no solid below, we must be falling
@@ -2325,6 +2385,8 @@ EntityCollisionDetection:
             AND #%11000000 ;the bit set to the left of three
             CMP #%01000000      ;solid
             BEQ EZeroNoCollisionL
+            CMP #%11000000      ;solid
+            BEQ EZeroNoCollisionL
             INC entitybuffer+Entity::xpos
             LDA #$02
             STA collreturnval
@@ -2346,6 +2408,8 @@ EntityCollisionDetection:
             LDA COLLMAPBANK, x
             AND #%00110000 ;the bit set to the left of three
             CMP #%00010000      
+            BEQ EOneNoCollisionL
+            CMP #%00110000      
             BEQ EOneNoCollisionL
             INC entitybuffer+Entity::xpos
             LDA #$02
@@ -2369,6 +2433,8 @@ EntityCollisionDetection:
             AND #%00001100 ;the bit set to the left of three
             CMP #%00000100      
             BEQ ETwoNoCollisionL
+            CMP #%00001100      
+            BEQ ETwoNoCollisionL
             INC entitybuffer+Entity::xpos
             LDA #$02
             STA collreturnval
@@ -2390,6 +2456,8 @@ EntityCollisionDetection:
             LDA COLLMAPBANK, x
             AND #%00000011 ;the bit set to the left of three
             CMP #%00000001      
+            BEQ EReturnFromCollL
+            CMP #%00000011      
             BEQ EReturnFromCollL
             INC entitybuffer+Entity::xpos
             LDA #$02
@@ -2460,6 +2528,8 @@ EntityCollisionDetection:
             AND #%11000000
             CMP #%01000000          ;solid (i.e. not a ledge)
             BEQ EZeroNoCollisionR
+            CMP #%11000000          ;solid (i.e. not a ledge)
+            BEQ EZeroNoCollisionR
             DEC entitybuffer+Entity::xpos
             LDA #$02
             STA collreturnval       ;return wall hit (for now, change value to be a ledge hit)
@@ -2480,6 +2550,8 @@ EntityCollisionDetection:
             LDA COLLMAPBANK, x
             AND #%00110000
             CMP #%00010000         ;solid
+            BEQ EOneNoCollisionR
+            CMP #%00110000         ;solid
             BEQ EOneNoCollisionR
             DEC entitybuffer+Entity::xpos
             LDA #$02
@@ -2502,6 +2574,8 @@ EntityCollisionDetection:
             AND #%00001100 ;the bit set to the left of three
             CMP #%00000100          ;solid
             BEQ ETwoNoCollisionR
+            CMP #%00001100          ;solid
+            BEQ ETwoNoCollisionR
             DEC entitybuffer+Entity::xpos
             LDA #$02
             STA collreturnval       ;return wall hit (for now, change value to be a ledge hit)
@@ -2523,6 +2597,9 @@ EntityCollisionDetection:
             AND #%00000011 
             CMP #%00000001          ;solid
             BEQ EReturnFromCollR    ;BEQ here because the other possibilities (right now) are nothing or climbable, both of which mean
+            CMP #%00000011          ;solid
+            BEQ EReturnFromCollR    ;BEQ here because the other possibilities (right now) are nothing or climbable, both of which mean
+
             DEC entitybuffer+Entity::xpos
             LDA #$02
             STA collreturnval       ;return wall hit
@@ -2751,7 +2828,7 @@ InitializeFirstScreen:
     ;block table
     LDA level+Area::selfaddr1
     CLC
-    ADC #$8A
+    ADC #$8C
     STA level+Area::btaddr1     ;OMG I can't believe on a certain write, this is landing dead on #$00, which is putting the ptr one page off.
     LDA level+Area::selfaddr2
     STA level+Area::btaddr2
@@ -2763,7 +2840,7 @@ IncrementBTHightByte:
 InitializeCollisionMap:
     LDA level+Area::selfaddr1
     CLC
-    ADC #$0E
+    ADC #$10
     STA level+Area::cmaddr1
     LDA level+Area::selfaddr2
     STA level+Area::cmaddr2
@@ -2774,7 +2851,7 @@ IncrementCMHighByte:
 InitializePaletteMap:
     LDA level+Area::selfaddr1
     CLC
-    ADC #$4A
+    ADC #$4C
     STA level+Area::paladdr1
     LDA level+Area::selfaddr2
     STA level+Area::paladdr2
@@ -2912,15 +2989,103 @@ InitializePlayer:
     PLA    
     RTS
 ;----------------------------------------------------------------
-
 InitializeGameOver:
-    ;Clear ENTITIES
-    ;Clear AREABANK
-    ;Clear TEXTBANK
-    ;Clear Nametable (loadBlankNametable)
-    ;Write some game over text with an option to restart
+    NOP
+    NOP
+    NOP
+    NOP
+    NOP
+
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+    LDX #$00
+    LDY #$00
+    LDA $2000
+    AND #%01111111
+    STA $2000
+    LDA #$00
+    STA $2001
+    ;Clear game RAM
+    ;0440-06FF
+    LDA #$00
+    LDX #$00
+Clear440Loop:
+    STA AREABANK, x
+    INX
+    CPX #$00
+    BNE Clear440Loop
+Clear500Loop:
+    STA COLLMAPBANK, x
+    INX
+    CPX #$00
+    BNE Clear500Loop
+Clear600Loop:
+    STA ENTITIES, x
+    INX
+    CPX #$00
+    BNE Clear600Loop
+    LDA #$FF
+Clear200Loop:
+    STA $0200, x    ;Fills $0200 with $FF, not 0. 
+    INX
+    CPX #$00
+    BNE Clear200Loop
+
+    LDA #$00
+    STA timer
+    LDA #<GAMEOVERSCREEN
+    STA ptr           ;utilize block table pointer for text load
+    LDA #>GAMEOVERSCREEN
+    STA ptr+1
+    JSR LoadTextFromROM  ;Load Title Screen text into TEXTBANK ($0580) [THIS WORKS]
+    
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$20
+    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
+    LDA #$00
+    STA $2006           ;PPUADDR
+
+    JSR LoadBlankNametable 
+    
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$28
+    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
+    LDA #$00
+    STA $2006           ;PPUADDR
+    JSR LoadBlankNametable
+    LDA #$23
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+    LDA #%01010101
+    STA bgpalette
+    JSR LoadSingleAttributes
+    JSR DrawText
 
 
+    LDA #$1E
+    STA $2001
+    LDA $2000
+    ORA #%10000000
+    STA $2000
+
+    LDA #$00
+    STA spritemem
+    LDA #$02
+    STA spritemem+1
+
+    LDA #$00
+    STA gamestate   ;game over screen behaves exactly the same as title screen
+
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA    
+    RTS
 ;Call as part of LoadNextArea
 LoadEntitiesFromROM:    
     PHA
@@ -2929,14 +3094,6 @@ LoadEntitiesFromROM:
     TYA
     PHA
 
-    NOP
-    NOP
-    NOP
-    NOP
-    NOP
-    NOP
-    NOP
-    NOP
 ;For right now, start from just after player, which is +12.
 ;The only entity to persist between screens will be the player.
     LDX #$0C
@@ -3594,7 +3751,7 @@ LoadAttributes:
     PHA
     TYA
     PHA
-    ;set address before calling because there are two, one for each nametable
+    ;set address before calling because there are two, one for each COLLMAPnametable
     ;LDA $2002       ;reset latch
     ;LDA #$23        ;High byte of $23CO address (attributes)
     ;STA $2006
@@ -4192,7 +4349,9 @@ TITLESCREEN:    ;3 lines of text   50b
     .byte $02, $48, $DB, $F2, $D0, $E6, $E2, $ED, $EC, $EE, $DD, $DA, $D4, $E9, $EB, $DE, $EC, $FE
     .byte $02, $8A, $E9, $EB, $DE, $EC, $EC, $D0, $EC, $ED, $DA, $EB, $ED, $FE, $FF           ;EOL, EOF
 
-
+GAMEOVERSCREEN:    ;3 lines of text   50b
+    .byte $01, $0C, $E0, $DA, $E6, $DE, $D0, $E8, $EF, $DE, $EB, $FE                 ;Sector (0-3),Offset (00-FF, or BF),text, EOL
+    .byte $01, $8B, $E9, $EB, $DE, $EC, $EC, $D0, $EC, $ED, $DA, $EB, $ED, $FE, $FF           ;EOL, EOF
 ;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
 ;--*--*--*--*--*--*--*--*--Game areas ROM--*--*--*--*--*--*--*--*--*--*--*
 ;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
@@ -4208,22 +4367,23 @@ TILESET0:
     .word BGTILES0   ;BGTILES0
 CONTENTS0:
     .byte $0B   ;offset to entities
-    .byte $0E   ;offset to collmap
-    .byte $4A     ;offset to palette map
-    .byte $8A   ;offset to block table
+    .byte $10   ;offset to collmap
+    .byte $4C     ;offset to palette map
+    .byte $8C   ;offset to block table
 ENTS0:
     .byte $84, $04       ;snake at (8, 4)
+    .byte $2D, $04
     .byte $FF           ;end of list
 COLLMAP0: ;will reduce to 60 bytes
-    .byte %01011000, %01010101, %01010101, %01010101
+    .byte %01011001, %01010101, %01111111, %11111101
     .byte %01001000, %00000000, %00000000, %00000001
     .byte %01001000, %00000000, %00000000, %00000001
     .byte %01010101, %01010000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00010101, %01010000, %00000001
+    .byte %01000000, %00111111, %11110000, %00000001
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01000000, %00000000, %00000000, %10000001
-    .byte %01000000, %00000000, %00000101, %10010101
+    .byte %01000000, %00000000, %00000101, %10111101
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01000000, %00000000, %00000000, %10000001
     .byte %01000000, %00000000, %00000000, %10000001
@@ -4248,15 +4408,15 @@ PALMAP0:
     .byte %00000000, %00000000, %00000000, %00000000
     .byte %00000000, %00000000, %00000000, %00000000
 BLOCKTABLE0: ;These blocks are all in mem location 0 and will never flip, so all they need is position X{0000}  --Y{0000}-- Actually they don't need Y
-    .byte $00, $10, $27,      $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF   ;right bit = tile id
+    .byte $00, $10, $27, $30, $40, $50, $60, $70, $80, $91, $A1, $B1, $C1, $D1, $E1, $F0, $FF   ;right bit = tile id
     .byte $00,      $27,                                                             $F0, $FF   ;0 = block
     .byte $00,      $27,                                                             $F0, $FF   ;7 = rope
     .byte $00, $10, $20, $30, $40, $50,                                              $F0, $FF   ;8 = vine
     .byte $00,                                                                       $F0, $FF
-    .byte $00,                     $50, $60, $70, $80, $90,                          $F0, $FF
+    .byte $00,                     $51, $61, $71, $81, $91  ,                          $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
-    .byte $00,                                               $A0, $B0,$C8, $D0, $E0, $F0, $FF                              
+    .byte $00,                                               $A0, $B0,$C8, $D1, $E1, $F0, $FF                              
     .byte $00,                                                        $C8,           $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
     .byte $00,                                                        $C8,           $F0, $FF
@@ -4276,11 +4436,10 @@ TILESET1:
     .word BGTILES0   ;BGTILES0
 CONTENTS1:
     .byte $0B   ;offset to entities
-    .byte $0E   ;offset to collmap
-    .byte $4A   ;offset to palette map
-    .byte $8A   ;offset to block table
+    .byte $0C   ;offset to collmap
+    .byte $48   ;offset to palette map
+    .byte $88   ;offset to block table
 ENTS1:
-    .byte $ED, $00    ;the last piece @ (15,14)
     .byte $FF        ;end of list
 ;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
 COLLMAP1:   ;60 bytes
@@ -4485,24 +4644,25 @@ CONTENTS4:
     .byte $48   ;offset to palette map
     .byte $88   ;offset to block table
 ENTS4:
+    ;.byte $ED, $00    ;the last piece @ (15,14)
     .byte $FF        ;end of list
 ;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
 COLLMAP4:   ;60 bytes
     .byte %01010101, %01010101, %01010101, %01011001
     .byte %01000000, %00000000, %00000000, %00001001
     .byte %01000000, %00000000, %00000000, %00001001
-    .byte %01000000, %00000000, %00000000, %00001001
-    .byte %01000000, %00000000, %00000010, %10101001
-    .byte %01000000, %00000000, %00101010, %00000001
-    .byte %01000000, %00000000, %00100010, %00000001
-    .byte %01000000, %00000000, %00000010, %00000001
+    .byte %01000000, %00000000, %10000000, %00001001
+    .byte %01000000, %00001000, %00001010, %10101001
+    .byte %01000000, %00100000, %00001000, %00000001
+    .byte %01100000, %00101000, %00001010, %00000001
+    .byte %01100000, %00001000, %00000010, %10000001
+    .byte %01100000, %00001010, %00000000, %10000001
+    .byte %01100000, %00000000, %00000010, %10000001
+    .byte %01000000, %00000010, %00000010, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01000000, %00000000, %00000000, %00000001
-    .byte %01010101, %01010101, %01010101, %01010101
+    .byte %01000000, %00001010, %00000000, %00000001
+    .byte %01000000, %00001000, %00000000, %00000001
+    .byte %01010101, %01011001, %01010101, %01010101
 PALMAP4:
     .byte %00000000, %00000000, %00000000, %00000000
     .byte %00000000, %00000000, %00000000, %00000000
@@ -4524,18 +4684,18 @@ BLOCKTABLE4:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table,
     .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E8, $F0, $FF
     .byte $00,                                                                  $E8, $F0, $FF
     .byte $00,                                                                  $E8, $F0, $FF
-    .byte $00,                                                                  $E8, $F0, $FF
-    .byte $00,                                                   $B8, $C8, $D8, $E8, $F0, $FF
-    .byte $00,                                         $98, $A8, $B8,                $F0, $FF
-    .byte $00,                                         $98,      $B8,                $F0, $FF
-    .byte $00,                                                   $B8,                $F0, $FF
+    .byte $00,                                    $88,                          $E8, $F0, $FF
+    .byte $00,                          $68,                $A8, $B8, $C8, $D8, $E8, $F0, $FF
+    .byte $00,                     $58,                     $A8,                     $F0, $FF
+    .byte $00, $18,                $58, $68,                $A8, $B8,                $F0, $FF
+    .byte $00, $18,                     $68,                     $B8, $C8,           $F0, $FF
+    .byte $00, $18,                     $68, $78,                     $C8,           $F0, $FF
+    .byte $00, $18,                                              $B8, $C8,           $F0, $FF
+    .byte $00,                               $78,                $B8,                $F0, $FF
     .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00,                                                                       $F0, $FF
-    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
+    .byte $00,                          $68, $78,                                    $F0, $FF
+    .byte $00,                          $68,                                         $F0, $FF
+    .byte $00, $10, $20, $30, $40, $50, $68, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
 
 
 
@@ -4565,7 +4725,7 @@ SNAKE:
 ;Second bit of BLOCKTABLE entry will point here
 BGTILES0:                       ;background tiles for world 0 (16 available) - tl, tr, bl, br
     .byte $00, $01, $10, $11    ;00     block wall
-    .byte $00, $00, $00, $00    ;01
+    .byte $00, $01, $20, $21    ;01     stalactite
     .byte $00, $00, $00, $00    ;02
     .byte $00, $00, $00, $00    ;03
     .byte $00, $00, $00, $00    ;04
