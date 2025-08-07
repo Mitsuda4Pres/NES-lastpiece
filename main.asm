@@ -34,8 +34,9 @@ JOYPAD1         = $4016
 JOYPAD2         = $4017
 
 ;;;Custom registers/maps
-AREABANK        = $0440     ;192 bytes for 96 areas. Do not exceed or you will bleed into $0500!
-COLLMAPBANK     = $0500    ;one page is 256 bytes. Is this enough or do I bleed into 0600?
+AREABANK        = $0440     ;128 bytes for 64 areas.
+UI              = $04C0     ;64 bytes
+COLLMAPBANK     = $0500     ;one page is 256 bytes. Is this enough or do I bleed into 0600? A colliion map will always be 60 bytes rn.
 TEXTBANK        = $0580
 ENTITIES        = $0600
 
@@ -190,6 +191,8 @@ CLEARMEM:
 INITIALIZETITLESCREEN:
     LDA #$00
     STA timer
+    LDA #$FF
+    STA ENTITIES
     LDA #<TITLESCREEN
     STA ptr           ;utilize block table pointer for text load
     LDA #>TITLESCREEN
@@ -706,12 +709,52 @@ CheckAgainstEntities:
     STA entcollisionret+1
     STA entcollisionret+2
     JSR CheckPlayerCollisionAgainstEntities
-    LDA entcollisionret
+    LDA entcollisionret     ;TODO: only checking first entity right now, ROBUSTIFY
     CMP #$00
-    BEQ CheckOver
+    BEQ JumpToCheckOver
     CMP #EntityType::Snake
     BEQ HandleSnakeHit
+    CMP #EntityType::Treasure
+    BEQ HandleGetTreasure
+JumpToCheckOver:
     JMP CheckOver
+HandleGetTreasure: ;How to handle multiple treasures on one stage? Not needed for this demo. two byte return value with location in ENTITIES?
+    LDX #$0C    ;end of player
+    FindTreasureEntity:
+        LDA ENTITIES, x
+        CMP #EntityType::Treasure
+        BEQ ResolveHandleTreasure
+        CMP #$FF    ;end of entities list
+        BEQ JumpToCheckOver   ;This should be impossible
+        CMP #$00    ;or type nothing (dead space)
+        BEQ JumpToCheckOver
+        CLC
+        ADC #$0C
+        JMP FindTreasureEntity
+    ResolveHandleTreasure:
+        LDA #$00
+        STA ENTITIES, x     ;turn off draw
+    HardCodeUIChangeForDemo:    ;TODO: placeholder code!!
+        LDX #$0C
+        LDA #$22        ;y
+        STA UI, x
+        INX
+        LDA #$39        ;spr
+        STA UI, x
+        INX
+        LDA #$01
+        STA UI, x
+        INX
+        LDA #$DC        ;x
+        STA UI, x
+        INX
+        LDA #$FF
+        STA UI, x
+
+        JMP CheckOver
+
+
+
 HandleSnakeHit:
     LDA playerdata+Entity::state
     AND #%00001000
@@ -794,10 +837,10 @@ HandleClimbableLeft:
     STA playerdata+Entity::env
     JMP ProcessRight
 HandleSolidLeft:
-    LDA playerdata+Entity::state
-    AND #%11111101  ;turn of walk
-    ORA #%00000001  ;turn on stand
-    STA playerdata+Entity::state
+    ;LDA playerdata+Entity::state
+    ;AND #%11111101  ;turn of walk
+    ;ORA #%00000001  ;turn on stand
+    ;STA playerdata+Entity::state
     INC playerdata+Entity::xpos
 ProcessRight:
     JSR CheckPlayerCollisionRight  
@@ -852,6 +895,10 @@ HandleSolidUp:
     STA playerdata+Entity::ypos
     JMP EndProcessPlayer
 HandleDamagingUp:
+    LDA playerdata+Entity::state
+    AND #%00001000
+    CMP #%00001000 ;invincible?
+    BEQ HandleSolidUp
     DEC playerdata+Entity::health
     LDA playerdata+Entity::health
     CMP #$00
@@ -1442,16 +1489,16 @@ PlayerCollisionDetection:
             LDA colltemp1
             AND #%00000011
         ResolveU:
-            CMP #$10            ;climbable?
-            BEQ ReturnClimbableU
-            CMP #$01            ;is solid
+            CMP #%00000011            ;if x1 or x2 is over damaging, we can resolve?
+            BEQ ReturnDamagingU
+            CMP #%00000001            ;is solid
             BEQ ReturnSolidU     ;if x1 or x2 is over solid, we can stop here
-            ;CMP #$11            ;if x1 or x2 is over damaging, we can resolve?
-            ;BEQ ReturnDamagingU
         ContinueResolveU:       ;TODO: check accuracy of this test for UP
-            LDA colltemp3       ;holding whether we checked x1 or x2
-            CMP #$01            ;if both points checked and no solid below, we must be falling
+            LDX colltemp3       ;holding whether we checked x1 or x2
+            CPX #$01            ;if both points checked and no solid below, we must be falling
             BNE TestX2U
+            CMP #%00000010            ;climbable?
+            BEQ ReturnClimbableU
             JMP ReturnFromCollisionUp
         ReturnClimbableU:
             LDA collreturnval
@@ -1609,7 +1656,7 @@ PlayerCollisionDetection:
         Resolve:
             CMP #%00000001
             BEQ ReturnSolid     ;if x1 or x2 is over solid, we can stop here
-            CMP #$11            ;if x1 or x2 is over damaging, we can resolve?
+            CMP #%00000011            ;if x1 or x2 is over damaging, we can resolve?
             BEQ ReturnSolid
             CMP #%00000010            ;climbable?
             BEQ ReturnClimbable
@@ -1660,7 +1707,15 @@ PlayerCollisionDetection:
             PHA
             TXA
             PHA
-            LDA playerdata+Entity::metax
+            LDA playerdata+Entity::xpos
+            CMP #$00
+            BNE ContinueGettingXL
+            JMP ReturnSolidL
+        ContinueGettingXL:
+            LSR
+            LSR
+            LSR
+            LSR
             LSR
             LSR
             STA colltemp1
@@ -1777,14 +1832,22 @@ PlayerCollisionDetection:
             PLA
             RTS
     ;---------------------------------------------------------------
-    CheckPlayerCollisionRight:    ;Does this have the same bug as EntityCollision did? Do I need to shift the byte I check in collmap?
+    CheckPlayerCollisionRight:    
         CheckPlayerCollisionRightStart:  ;add edge screen detect
             PHA
             TXA
             PHA
-            LDA playerdata+Entity::metax
+            LDA playerdata+Entity::xpos
             CLC
-            ADC #$01
+            ADC #$10
+            CMP #$FF
+            BNE ContinueGettingXR
+            JMP ReturnSolidR
+        ContinueGettingXR:
+            LSR
+            LSR
+            LSR
+            LSR
             LSR
             LSR
             STA colltemp1
@@ -1884,7 +1947,7 @@ PlayerCollisionDetection:
         ReturnSolidR:
             LDA collreturnval
             ORA #%00000001
-            AND #%11111101      ;mask xxxx01xx
+            AND #%11111101      ;mask xxxxxx01
             STA collreturnval
             JMP ReturnFromCollR
         ReturnNothingR:
@@ -2819,7 +2882,15 @@ WriteAreaBankLoop:      ;Write all areas PRGROM addresses into RAM lookup table
     INX
     LDA #>AREA4
     STA AREABANK, x
+    INX
+    LDA #<AREA5
+    STA AREABANK, x
+    INX
+    LDA #>AREA5
+    STA AREABANK, x
     LDX #$00
+
+    JSR LoadUI
 InitializeFirstScreen:
     LDA AREABANK                ;set AREA0 as current level
     STA level+Area::selfaddr1
@@ -3086,6 +3157,69 @@ Clear200Loop:
     TAX
     PLA    
     RTS
+
+;add hearts to UI later?
+;Bank UI elements in ROM later and load with pointer and loop
+LoadUI: ;UI format - y, spr, pal, x (follow OAM format)
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    LDX #$00        ;UI bank index
+    
+    LDA #$1A        ;y
+    STA UI, x
+    INX
+    LDA #$28        
+    STA UI, x
+    INX
+    LDA #$01
+    STA UI, x
+    INX
+    LDA #$D4        ;same x as heart
+    STA UI, x
+    INX
+
+    LDA #$1A        ;y
+    STA UI, x
+    INX
+    LDA #$29        ;tr spr
+    STA UI, x
+    INX
+    LDA #$01
+    STA UI, x
+    INX
+    LDA #$DC        ;x
+    STA UI, x
+    INX
+
+    LDA #$22        ;y
+    STA UI, x
+    INX
+    LDA #$38        ;bl spr
+    STA UI, x
+    INX
+    LDA #$01
+    STA UI, x
+    INX
+    LDA #$D4        ;x
+    STA UI, x
+    INX
+
+EndLoadUI:
+    LDA #$FF
+    STA UI, x
+
+    PLA     
+    TAY
+    PLA
+    TAX
+    PLA    
+    RTS
+
+
 ;Call as part of LoadNextArea
 LoadEntitiesFromROM:    
     PHA
@@ -4033,13 +4167,24 @@ VBLANK:
     STA spritemem+1
 
 DRAWENTITIES:               ;Load info into a Metatile struct then draw
-BeginLoadEntityLoop:
     LDX #$00
+BeginLoadEntityLoop: 
     LDA ENTITIES, x      ;check if there are no sprites at all
-    CMP #$00
+    CMP #$FF
     BNE LoadEntityLoop
     JMP DONESPRITE
 LoadEntityLoop:
+    LDA ENTITIES, x     ;type
+    CMP #$00            ;type nothing
+    BEQ AdvanceToNextEntity
+    JMP ContinueCurrentEntity
+AdvanceToNextEntity:
+    TXA
+    CLC
+    ADC #$0C
+    TAX
+    JMP BeginLoadEntityLoop
+ContinueCurrentEntity:
     INX ;go past type
     LDA ENTITIES, x     ;xpos
     STA metatile+Metatile::xpos
@@ -4233,6 +4378,17 @@ DONESPRITE:
     LDA playerdata+Entity::health
     CMP #$00
     BEQ DoneDrawHearts
+DrawUI:
+    LDX #$00
+BeginDrawUILoop:
+    LDA UI, x
+    CMP #$FF
+    BEQ EndDrawUI
+    STA (spritemem), y
+    INY
+    INX
+    JMP BeginDrawUILoop
+EndDrawUI:
 DrawHearts:             ;$2F @ (D8, 16)
     LDX #$D4
     LDA #$00
@@ -4269,6 +4425,7 @@ DoneDrawHearts:
     LDA #$00    ;clear register
     STA $2006
     STA $2006   ;$2006 takes a double write PPUDATA
+
 
     ;when ready for scrolling background, only if screen is transitioning
     LDA gamestate
@@ -4355,6 +4512,13 @@ GAMEOVERSCREEN:    ;3 lines of text   50b
 ;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
 ;--*--*--*--*--*--*--*--*--Game areas ROM--*--*--*--*--*--*--*--*--*--*--*
 ;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
+;If further compression is needed down the road:
+;   -Add PALMAP toggle signal. Several of these stages only use one palette, so there's no need to burn 64b
+;       in that instance. If it is replaced with a hex combo that couldn't be a palette option, or perhaps a signal
+        ;somewhere else that tells the nametable routine that there is just one palette choice for this stage.
+;If more collision types are needed:
+;   -I'll have to double to a 4 bit collision map process. I think 3 bit would be too onerous to program decrompression for and would
+;   waste lots of cycles.
 AREA0:  ;233 bytes, How to traverse these memory chunks. Start with a little "table of contents"? A few bytes to load as an adder to each segment?
 SELFID0:
     .byte $00
@@ -4633,7 +4797,7 @@ SELFID4:
     .byte $08   ;RAM lookup table place number. By 2s for storing two-byte PRGROM addresses
 EXITS4:
     .byte $06   ;up
-    .byte $FF   ;down
+    .byte $0A   ;down
     .byte $FF   ;left
     .byte $FF   ;right
 TILESET4:
@@ -4697,6 +4861,74 @@ BLOCKTABLE4:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table,
     .byte $00,                          $68,                                         $F0, $FF
     .byte $00, $10, $20, $30, $40, $50, $68, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
 
+AREA5:
+SELFID5:
+    .byte $0A   ;RAM lookup table place number. By 2s for storing two-byte PRGROM addresses
+EXITS5:
+    .byte $08   ;up
+    .byte $FF   ;down
+    .byte $FF   ;left
+    .byte $FF   ;right
+TILESET5:
+    .word BGTILES0   ;BGTILES0
+CONTENTS5:
+    .byte $0B   ;offset to entities
+    .byte $0E   ;offset to collmap
+    .byte $4A   ;offset to palette map
+    .byte $8A   ;offset to block table
+ENTS5:
+    .byte $CD, $00    ;the last piece @ (15,14)
+    .byte $FF        ;end of list
+;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
+COLLMAP5:   ;60 bytes
+    .byte %01010101, %01011001, %01010101, %01010101
+    .byte %01000000, %00001001, %00000000, %00000001
+    .byte %01000000, %00000001, %00000000, %00000001
+    .byte %01000000, %00000101, %00000001, %01000001
+    .byte %01000000, %01010100, %00000101, %10000001
+    .byte %01000001, %01000000, %00000100, %10000001
+    .byte %01000101, %00000000, %01010100, %10000101
+    .byte %01000001, %00000001, %01000000, %10000001
+    .byte %01000000, %00000101, %00000000, %10000001
+    .byte %01010000, %00010100, %00000000, %10000001
+    .byte %01010101, %01010000, %00000000, %10000001
+    .byte %01000000, %00000000, %00000001, %01010001
+    .byte %01000000, %00000000, %00000101, %00010101
+    .byte %01000000, %01010100, %00000000, %00000101
+    .byte %01010101, %01010101, %01010101, %01010101
+PALMAP5:
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+    .byte %00000000, %00000000, %00000000, %00000000
+BLOCKTABLE5:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table, etc)
+    .byte $00, $10, $20, $30, $40, $50, $68, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
+    .byte $00,                          $68, $70,                                    $F0, $FF
+    .byte $00,                               $70,                                    $F0, $FF
+    .byte $00,                          $60, $70,                $B0, $C0,           $F0, $FF
+    .byte $00,                $40, $50, $60,                $A0, $B0, $C8,           $F0, $FF
+    .byte $00,           $30, $40,                          $A0,      $C8,           $F0, $FF
+    .byte $00,      $20, $30,                     $80, $90, $A0,      $C8,      $E0, $F0, $FF
+    .byte $00,           $30,                $70, $80,                $C8,           $F0, $FF
+    .byte $00,                          $60, $70,                     $C8,           $F0, $FF
+    .byte $00, $10,                $50, $60,                          $C8,           $F0, $FF
+    .byte $00, $10, $20, $30, $40, $50,                               $C8,           $F0, $FF
+    .byte $00,                                                   $B0, $C0, $D0,      $F0, $FF
+    .byte $00,                                              $A0, $B0,      $D0, $E0, $F0, $FF
+    .byte $00,                $40, $50, $60,                                    $E0, $F0, $FF
+    .byte $00, $10, $20, $30, $40, $50, $60, $70, $80, $90, $A0, $B0, $C0, $D0, $E0, $F0, $FF
 
 
 ENTPOINTERS: ;load with offset from AREA data. Offset runs by 2s for word size.
@@ -4721,6 +4953,7 @@ SNAKE:
     .byte $02                   ;number of frames
     .byte $F0, $41, $50, $51    ;sprite1
     .byte $F0, $40, $52, $42    ;sprite2
+
 
 ;Second bit of BLOCKTABLE entry will point here
 BGTILES0:                       ;background tiles for world 0 (16 available) - tl, tr, bl, br
