@@ -111,7 +111,7 @@ ENTITIES        = $0600
 
 ;I had to open up the zero page in nes.cfg to range from $0002 to $00FF. Idk if that will break something later.
 .segment "ZEROPAGE"
-gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - cutscene, $05 - screen transition, $06 - PPUoff NT fill, $07 - transition to main game
+gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - win/cutscene, $05 - screen transition, $06 - PPUoff NT fill, $07 - transition to main game
 controller:         .res 1    ;reserve 1 byte for controller input
 drawcomplete:       .res 1      ;1 bit flag
 scrollx:            .res 1
@@ -130,7 +130,8 @@ collreturnval:      .res 1
 animaframes:        .res 1
 totalsprites:       .res 1
 playerdata:         .res .sizeof(Entity)            ;14b
-entcollisionret:   .res 3                          ;array to return the "ids" of collided entities
+lastpiece:          .res 1
+entcollisionret:    .res 3                          ;array to return the "ids" of collided entities
 playeroverbox:      .res 1
 metatile:           .res .sizeof(Metatile)          ;8b
 entitybuffer:       .res .sizeof(Entity)            ;14b
@@ -201,8 +202,10 @@ INITIALIZETITLESCREEN:
     LDA #$FF
     STA ENTITIES
     LDA #<TITLESCREEN
+    ;LDA #<VICTORYSCREEN
     STA ptr           ;utilize block table pointer for text load
     LDA #>TITLESCREEN
+    ;LDA #>VICTORYSCREEN
     STA ptr+1
     JSR LoadTextFromROM  ;Load Title Screen text into TEXTBANK ($0580) [THIS WORKS]
     
@@ -295,6 +298,8 @@ CheckForGameState:       ;After player is written, see if game has entered "tran
     LDA gamestate
     CMP #$03            ;game over
     BEQ HandleGameOver
+    CMP #$04            ;win state, cutscene
+    BEQ HandleWin
     CMP #$05
     BEQ JumpToScreenTransition
     CMP #$06
@@ -310,8 +315,18 @@ HandleGameOver:
     BEQ JumpToInitGameOver
     JMP waitfordrawtocomplete
 JumpToInitGameOver:
-    JSR InitializeGameOver
+    LDA #<GAMEOVERSCREEN
+    STA ptr           ;utilize block table pointer for text load
+    LDA #>GAMEOVERSCREEN
+    STA ptr+1
+
+    JSR InitializeAltScreen
     JMP waitfordrawtocomplete
+HandleWin:          ;can we handle a cutscene without a separate game loop?
+    JSR VictoryCutscene
+    JMP waitfordrawtocomplete
+
+
 DoneCheckForGameState:
 INITSPRITES:
     LDY #$00
@@ -517,6 +532,23 @@ CheckHealth:
     LDA #$00
     STA playerdata+Entity::health
 LoadState:
+;check win conditions
+CheckWinConditions:
+    LDA lastpiece       ;has the player collected the last piece?
+    CMP #$01
+    BNE CheckInvincibleState
+    LDY #$00
+    LDA (level+Area::selfaddr1), y  ;do I need to move this into ptr first? If not, TODO: go save cycles/zero page in LoadNextArea
+    CMP #$04            ;self ID of "outside" top screen
+    BNE CheckInvincibleState
+    LDA #$00
+    STA colltemp1
+    STA colltemp2
+    STA colltemp3
+    STA timer
+    LDA #$04        ;laughably, the self ID of the final area and the "win" gamestate ID are the same, so I could skip this line.
+    STA gamestate   ;but I would feel uncomfortable doing so bc if I reogranize something, it would break and I'd forget why.
+    JMP waitfordrawtocomplete
 ;check invincible state
 CheckInvincibleState:
     LDA playerdata+Entity::state
@@ -735,12 +767,17 @@ HandleGetTreasure: ;How to handle multiple treasures on one stage? Not needed fo
         BEQ JumpToCheckOver   ;This should be impossible
         CMP #$00    ;or type nothing (dead space)
         BEQ JumpToCheckOver
+        TXA
         CLC
         ADC #$0C
+        TAX
         JMP FindTreasureEntity
     ResolveHandleTreasure:
         LDA #$00
         STA ENTITIES, x     ;turn off draw
+        LDA #$01
+        STA lastpiece       ;hooray, you now have the last piece   
+                            ;Replace this code with an inventory system if game gets bigger
     HardCodeUIChangeForDemo:    ;TODO: placeholder code!!
         LDX #$0C
         LDA #$22        ;y
@@ -759,8 +796,6 @@ HandleGetTreasure: ;How to handle multiple treasures on one stage? Not needed fo
         STA UI, x
 
         JMP CheckOver
-
-
 
 HandleSnakeHit:
     LDA playerdata+Entity::state
@@ -1151,7 +1186,7 @@ GoToGAMELOOP:
 
 
 ;---------------------------------------------------------------------------------------------
-;---------------------------------------------------------------------------------------------
+;----------------------Alternative Game Loops-----------------------------
 
 
 
@@ -1327,11 +1362,6 @@ SCREENTRANLOOP:
         STA drawcomplete
 
         JMP SCREENTRANLOOP
-
-
-
-
-
 
 
 
@@ -2730,10 +2760,235 @@ ChangeEntityFacing: ;push A and Y, doesn't use x
     PLA
     RTS
 
+;;;Cutscene subroutines
+;;;--------------------------------------------------------------------------------------;;;
+;;;--*--*--*--*--*--*--*--*--*--*--* CUTSCENE SUBROUTINE   *--*--*--*--*--*--*--*--*--*--*--
+;;;--------------------------------------------------------------------------------------;;;
 
+VictoryCutscene:    ;timer will run still
+                    ;use colltemp1, etc. as counters for cutscene animation stages
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+    LDX #$00
+    LDY #$00
+CheckAnimationState:
+    LDA colltemp1
+    CMP #00
+    BEQ VState0
+    CMP #$01
+    BEQ VState1
+    CMP #$02
+    BEQ VState2
+    CMP #$03
+    BEQ VState3
+    CMP #$04
+    BEQ JumpToVState4
+    JMP ReturnFromVictoryCutscene
+JumpToVState4:
+    JMP VState4
+VState0:    ;finish climbing out
+    LDA playerdata+Entity::ypos
+    CMP #$D0
+    BEQ AdvanceToVState1
+    DEC playerdata+Entity::ypos
+    INC animaframes
+    JMP SetClimbingC
+AdvanceToVState1:
+    LDA playerdata+Entity::state
+    ORA #%10000000  ;force face right
+    AND #%10111111
+    STA playerdata+Entity::state
+    LDA #$01
+    STA colltemp1
+    JMP CopyPDtoEBLoopC
+VState1:    ;walk to right side of screen
+    LDA playerdata+Entity::xpos
+    CMP #$B0
+    BEQ AdvanceToVState2
+    INC playerdata+Entity::xpos
+    INC animaframes
+    JMP SetWalkFrameC
+AdvanceToVState2:
+    LDA playerdata+Entity::state
+    ORA #%01000000  ;switch facing
+    AND #%01111111
+    STA playerdata+Entity::state
+    LDA #$02
+    STA colltemp1
+    LDA #$4D
+    STA timer
+    LDA #$00
+    STA bgpalette
+    JMP CopyPDtoEBLoopC
+VState2:
+    LDA timer
+    CMP #$00
+    BNE JumpToReturnVC
+    LDA #$03            ;Advance to state3
+    STA colltemp1
+    LDA #$00
+    STA colltemp2
+    LDA #$AB
+    STA timer
+    JMP CopyPDtoEBLoopC
+JumpToReturnVC:
+    JMP ReturnFromVictoryCutscene
+VState3:
+    LDA timer
+    CMP #$00
+    BEQ AdvanceToVState4
+    LDA timer
+    AND #%00000100
+    CMP #%00000100
+    BNE JumpToReturnVC
+    INC colltemp2
+    LDA colltemp2
+    CMP #$01
+    BEQ VCPal1
+    CMP #$02
+    BEQ VCPal2
+    CMP #$03
+    BEQ VCPal3
+    CMP #$00
+    BEQ VCPal4
+VCPal1:
+    LDA #$00
+    STA bgpalette
+    JMP FinishVState3
+VCPal2:
+    LDA #$55
+    STA bgpalette
+    JMP FinishVState3
+VCPal3:
+    LDA #$00
+    STA colltemp2
+    LDA #$AA
+    STA bgpalette
+    JMP FinishVState3
+VCPal4:
+    LDA #$FF
+    STA bgpalette
+FinishVState3:
+    LDA $2002
+    LDA #$23
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+    JSR LoadSingleAttributes
+    JMP CopyPDtoEBLoopC
+AdvanceToVState4:
+    LDA #$00
+    STA bgpalette
+    LDA $2002
+    LDA #$23
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+    JSR LoadSingleAttributes
+    LDA #$04
+    STA colltemp1
+    LDA playerdata+Entity::state
+    ORA #%10000000      ;face right again
+    AND #%10111111
+    STA playerdata+Entity::state
+    JMP CopyPDtoEBLoopC
+VState4:
+    LDA playerdata+Entity::xpos
+    CMP #$F8
+    BEQ FinishCutscene
+    INC playerdata+Entity::xpos
+    INC animaframes
+    JMP SetWalkFrameC
+FinishCutscene:
+    LDA #$00
+    STA gamestate
+    LDA #$FF
+    STA ENTITIES
+    LDA #<VICTORYSCREEN
+    STA ptr           ;utilize block table pointer for text load
+    LDA #>VICTORYSCREEN
+    STA ptr+1
 
+    JSR InitializeAltScreen
+    JMP ReturnFromVictoryCutscene
 
+SetClimbingC:
+    LDA #$04
+    STA playerdata+Entity::tlspr
+    LDA #$05
+    STA playerdata+Entity::trspr
+    LDA #$14
+    STA playerdata+Entity::blspr
+    LDA #$15
+    STA playerdata+Entity::brspr
+    LDA animaframes
+    LSR
+    LSR
+    LSR
+    LSR
+    BCS SetClimbingTwoC
+SetClimbingOneC:
+    LDA playerdata+Entity::state
+    ORA #%10000000
+    AND #%10111111
+    STA playerdata+Entity::state
+    JMP CopyPDtoEBLoopC
+SetClimbingTwoC:
+    LDA playerdata+Entity::state
+    ORA #%01000000
+    AND #%01111111
+    STA playerdata+Entity::state
+    JMP CopyPDtoEBLoopC
 
+SetWalkFrameC:
+    LDA animaframes
+    LSR
+    LSR
+    LSR
+    LSR
+    BCS SetWalkTwoC
+SetWalkOneC:
+    LDA #$00
+    STA playerdata+Entity::tlspr
+    LDA #$01
+    STA playerdata+Entity::trspr
+    LDA #$12
+    STA playerdata+Entity::blspr
+    LDA #$02
+    STA playerdata+Entity::brspr
+    JMP CopyPDtoEBLoopC
+SetWalkTwoC:
+    LDA #$00
+    STA playerdata+Entity::tlspr
+    LDA #$01
+    STA playerdata+Entity::trspr
+    LDA #$13
+    STA playerdata+Entity::blspr
+    LDA #$03
+    STA playerdata+Entity::brspr
+
+CopyPDtoEBLoopC:
+    LDA playerdata, x
+    STA entitybuffer, x
+    INX
+    INY
+    CPY #$0B    ;12 items in entity struct
+    BNE CopyPDtoEBLoopC
+    LDX #$00    ;X = ENTITIES index of player + 1
+    LDA #$01
+    STA checkvar    ;set checkvar to 1 so subroutine does not mess with stack
+    JSR WriteEntityFromBuffer ;Subroutine to write all the changes made to player this frame
+
+ReturnFromVictoryCutscene:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
 
 
 
@@ -3067,7 +3322,7 @@ InitializePlayer:
     PLA    
     RTS
 ;----------------------------------------------------------------
-InitializeGameOver:
+InitializeAltScreen: ;define ptr/ptr+1 with address of text table before coming in
     NOP
     NOP
     NOP
@@ -3115,10 +3370,10 @@ Clear200Loop:
 
     LDA #$00
     STA timer
-    LDA #<GAMEOVERSCREEN
-    STA ptr           ;utilize block table pointer for text load
-    LDA #>GAMEOVERSCREEN
-    STA ptr+1
+    ;LDA #<GAMEOVERSCREEN
+    ;STA ptr           ;utilize block table pointer for text load
+    ;LDA #>GAMEOVERSCREEN
+    ;STA ptr+1
     JSR LoadTextFromROM  ;Load Title Screen text into TEXTBANK ($0580) [THIS WORKS]
     
     LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
@@ -4517,6 +4772,23 @@ TITLESCREEN:    ;3 lines of text   50b
 GAMEOVERSCREEN:    ;3 lines of text   50b
     .byte $01, $0C, $E0, $DA, $E6, $DE, $D0, $E8, $EF, $DE, $EB, $FE                 ;Sector (0-3),Offset (00-FF, or BF),text, EOL
     .byte $01, $8B, $E9, $EB, $DE, $EC, $EC, $D0, $EC, $ED, $DA, $EB, $ED, $FE, $FF           ;EOL, EOF
+
+
+
+VICTORYSCREEN:    ;
+    ;AT LAST YOU HAVE IT
+    .byte $01, $07, $DA, $ED, $D0, $E5, $DA, $EC, $ED, $D0, $F2, $E8, $EE, $D0, $E1, $DA, $EF, $DE, $D0, $E2, $ED, $FE     ;Sector (0-3),Offset (00-FF, or BF),text, EOL
+    .byte $01, $6E, $80, $81, $82, $83, $FE           ;EOL, EOF
+    .byte $01, $8E, $90, $91, $92, $93, $FE
+
+    .byte $01, $AE, $84, $85, $86, $87, $FE
+    .byte $01, $CE, $94, $95, $96, $97, $FE           ;EOL, EOF
+
+    ;THE FABLED MEDALLION
+    .byte $02, $C7, $ED, $E1, $DE, $D0, $DF, $DA, $DB, $E5, $DE, $DD, $D0, $E6, $DE, $DD, $DA, $E5, $E5, $E2, $E8, $E7, $FE           ;EOL, EOF
+    ;WILL MAKE YOU A LEGEND
+    .byte $03, $06, $F0, $E2, $E5, $E5, $D0, $E6, $DA, $E4, $DE, $D0, $F2, $E8, $EE, $D0, $DA, $D0, $E5, $DE, $E0, $DE, $E7, $DD, $FE, $FF          ;EOL, EOF
+
 ;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
 ;--*--*--*--*--*--*--*--*--Game areas ROM--*--*--*--*--*--*--*--*--*--*--*
 ;--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*--*
@@ -4544,6 +4816,7 @@ CONTENTS0:
     .byte $8C   ;offset to block table
 ENTS0:
     .byte $84, $04       ;snake at (8, 4)
+    ;.byte $52, $00    ;DEBUG: the last piece @ (15,14)    
     .byte $2D, $04
     .byte $FF           ;end of list
 COLLMAP0: ;will reduce to 60 bytes
@@ -4608,10 +4881,11 @@ TILESET1:
     .word BGTILES0   ;BGTILES0
 CONTENTS1:
     .byte $0B   ;offset to entities
-    .byte $0C   ;offset to collmap
-    .byte $48   ;offset to palette map
-    .byte $88   ;offset to block table
+    .byte $0E   ;offset to collmap
+    .byte $4A   ;offset to palette map
+    .byte $8A   ;offset to block table
 ENTS1:
+    .byte $7A, $04       ;snake at (9, A)
     .byte $FF        ;end of list
 ;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
 COLLMAP1:   ;60 bytes
@@ -4623,7 +4897,7 @@ COLLMAP1:   ;60 bytes
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000001, %01010001
-    .byte %01000000, %00000000, %00000000, %00000001
+    .byte %01000000, %00000000, %00000101, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000000, %00000000, %00000001
     .byte %01000000, %00000001, %01010101, %00000001
@@ -4656,7 +4930,7 @@ BLOCKTABLE1:    ;xxxxiiii - x = xpos on row, i = id pointer (see BGTILES0 table,
     .byte $00,                                                                       $F0, $FF
     .byte $00,                                                                       $F0, $FF
     .byte $00,                                                   $B0, $C0, $D0,      $F0, $FF
-    .byte $00,                                                                       $F0, $FF                              
+    .byte $00,                                              $A0, $B0,                $F0, $FF                              
     .byte $00,                                                                       $F0, $FF
     .byte $00,                                                                       $F0, $FF
     .byte $00,                               $70, $80, $90, $A0, $B0,                $F0, $FF
@@ -4744,10 +5018,11 @@ TILESET3:
     .word BGTILES0   ;BGTILES0
 CONTENTS3:
     .byte $0B   ;offset to entities
-    .byte $0C   ;offset to collmap
-    .byte $48   ;offset to palette map
-    .byte $88   ;offset to block table
+    .byte $0E   ;offset to collmap
+    .byte $4A   ;offset to palette map
+    .byte $8A   ;offset to block table
 ENTS3:
+    .byte $98, $04       ;snake at (9, 8)
     .byte $FF        ;end of list
 ;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
 COLLMAP3:   ;60 bytes
@@ -4881,10 +5156,11 @@ TILESET5:
     .word BGTILES0   ;BGTILES0
 CONTENTS5:
     .byte $0B   ;offset to entities
-    .byte $0E   ;offset to collmap
-    .byte $4A   ;offset to palette map
-    .byte $8A   ;offset to block table
+    .byte $10   ;offset to collmap
+    .byte $4C   ;offset to palette map
+    .byte $8C   ;offset to block table
 ENTS5:
+    .byte $85, $04       ;snake at (8, 4)
     .byte $CD, $00    ;the last piece @ (15,14)
     .byte $FF        ;end of list
 ;2-bit collision map: 00 - nothing, 01 - solid, 10 - climbable, 11 - damaging.
