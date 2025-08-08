@@ -1,3 +1,10 @@
+;TODO: 8/7 - Fix climb down bug on screen 3 that pushes player left
+;   8/7 - Auto jump bug when landing on vine
+;   8/7 - Collision bug when trying to jump sideways through a one tile opening.
+;   8/7 - When climbing to top of vine, character "vibrates". Make it so he just chills until jumping off
+;   8/7 - "Vibrates" when vertical in a one tile wide space
+
+
 .segment "HEADER"
 
     .byte "NES" 
@@ -304,7 +311,7 @@ HandleGameOver:
     JMP waitfordrawtocomplete
 JumpToInitGameOver:
     JSR InitializeGameOver
-
+    JMP waitfordrawtocomplete
 DoneCheckForGameState:
 INITSPRITES:
     LDY #$00
@@ -3099,6 +3106,7 @@ Clear600Loop:
     CPX #$00
     BNE Clear600Loop
     LDA #$FF
+    STA ENTITIES
 Clear200Loop:
     STA $0200, x    ;Fills $0200 with $FF, not 0. 
     INX
