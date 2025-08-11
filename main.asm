@@ -111,7 +111,7 @@ ENTITIES        = $0600
 
 ;I had to open up the zero page in nes.cfg to range from $0002 to $00FF. Idk if that will break something later.
 .segment "ZEROPAGE"
-gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - win/cutscene, $05 - screen transition, $06 - PPUoff NT fill, $07 - transition to main game
+gamestate:          .res 1  ;$00 - title, $01 - main game, $02 - paused, $03 - game over, $04 - win/cutscene, $05 - screen transition, $06 - PPUoff NT fill, $07 - transition to main game, #$08 - main game but with lava
 controller:         .res 1    ;reserve 1 byte for controller input
 drawcomplete:       .res 1      ;1 bit flag
 scrollx:            .res 1
@@ -133,6 +133,9 @@ playerdata:         .res .sizeof(Entity)            ;14b
 lastpiece:          .res 1
 entcollisionret:    .res 3                          ;array to return the "ids" of collided entities
 playeroverbox:      .res 1
+lavacounter:        .res 1
+lavatimer:          .res 1
+cutsceneid:         .res 1                          ;00 - none, 01 - lava shake, 02 - victory
 metatile:           .res .sizeof(Metatile)          ;8b
 entitybuffer:       .res .sizeof(Entity)            ;14b
 blockrow:           .res 16
@@ -282,6 +285,27 @@ FINISHINIT:
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ;--------------------------------------------------------------------------------------
 ;--------------------------------------------------------------------------------------
 ;-----------------MAIN GAME LOOP-------------------------------------------------------
@@ -299,10 +323,12 @@ CheckForGameState:       ;After player is written, see if game has entered "tran
     CMP #$03            ;game over
     BEQ HandleGameOver
     CMP #$04            ;win state, cutscene
-    BEQ HandleWin
+    BEQ HandleCutscene
     CMP #$05
     BEQ JumpToScreenTransition
-    CMP #$06
+    CMP #$08
+    BEQ HandleLava
+    CMP #$06            ;leave as last in list because it just calls a JSR
     BNE DoneCheckForGameState
     JSR LoadNextArea
     JMP waitfordrawtocomplete
@@ -310,23 +336,63 @@ JumpToScreenTransition:
     JMP SCREENTRANLOOP   ;waitfordrawtocompleteST   ;do I need to do jump to a specific part of the loop?
 
 HandleGameOver:
-    LDA timer
-    CMP #$00
-    BEQ JumpToInitGameOver
-    JMP waitfordrawtocomplete
-JumpToInitGameOver:
-    LDA #<GAMEOVERSCREEN
-    STA ptr           ;utilize block table pointer for text load
-    LDA #>GAMEOVERSCREEN
-    STA ptr+1
+        LDA timer
+        CMP #$00
+        BEQ JumpToInitGameOver
+        JMP waitfordrawtocomplete
+    JumpToInitGameOver:
+        LDA #<GAMEOVERSCREEN
+        STA ptr           ;utilize block table pointer for text load
+        LDA #>GAMEOVERSCREEN
+        STA ptr+1
 
-    JSR InitializeAltScreen
-    JMP waitfordrawtocomplete
-HandleWin:          ;can we handle a cutscene without a separate game loop?
-    JSR VictoryCutscene
-    JMP waitfordrawtocomplete
+        JSR InitializeAltScreen
+        JMP waitfordrawtocomplete
+HandleCutscene:          ;make sure relevant variables, esp custceneid, for a scene are set at time the state is changed.
+        LDA cutsceneid
+        CMP #$00
+        BEQ DoneCheckForGameState  ;00 - bug state, gamestate shows cutscene but no id given
+        CMP #$01
+        BEQ RunCutscene1
+        CMP #$02
+        BEQ RunCutscene2
+        JMP DoneCheckForGameState   ;no branch bug state, given id doesn't have associated cutscene
+    RunCutscene1:
+        LDA timer
+        CMP #$00
+        BEQ ExitCutscene1
+        JSR PaletteShake
+        JMP waitfordrawtocomplete
+    ExitCutscene1:
+        LDA #$08        ;enter lava state
+        STA gamestate
+        LDA #$00
+        STA bgpalette    
+        LDA $2002
+        LDA #$23
+        STA $2006           ;PPUADDR      nametable1 attribute layer
+        LDA #$C0
+        STA $2006           ;PPUADDR
+        JSR LoadSingleAttributes
+        LDA #$00
+        STA cutsceneid
+        JMP waitfordrawtocomplete
+    RunCutscene2:
+        JSR VictoryCutscene
+        JMP waitfordrawtocomplete
 
-
+HandleLava:             ;anything else we needto do here? Once the top row animation is in, may need some added logic
+        LDA lavatimer
+        CMP #$00
+        BEQ ResetLavaTimer
+        DEC lavatimer
+        JMP FinishHandleLava
+    ResetLavaTimer:
+        INC lavacounter
+        LDA #$80        ;time between lava flow advances
+        STA lavatimer
+    FinishHandleLava:
+        JSR AddLavaToNametable
 DoneCheckForGameState:
 INITSPRITES:
     LDY #$00
@@ -546,6 +612,8 @@ CheckWinConditions:
     STA colltemp2
     STA colltemp3
     STA timer
+    LDA #$02        ;victory cutscene id in cutscene library
+    STA cutsceneid
     LDA #$04        ;laughably, the self ID of the final area and the "win" gamestate ID are the same, so I could skip this line.
     STA gamestate   ;but I would feel uncomfortable doing so bc if I reogranize something, it would break and I'd forget why.
     JMP waitfordrawtocomplete
@@ -758,6 +826,13 @@ CheckAgainstEntities:
 JumpToCheckOver:
     JMP CheckOver
 HandleGetTreasure: ;How to handle multiple treasures on one stage? Not needed for this demo. two byte return value with location in ENTITIES?
+    LDA #$80
+    STA timer
+    LDA #$01
+    STA cutsceneid
+    LDA #$04
+    STA gamestate
+    
     LDX #$0C    ;end of player
     FindTreasureEntity:
         LDA ENTITIES, x
@@ -2764,6 +2839,66 @@ ChangeEntityFacing: ;push A and Y, doesn't use x
 ;;;--------------------------------------------------------------------------------------;;;
 ;;;--*--*--*--*--*--*--*--*--*--*--* CUTSCENE SUBROUTINE   *--*--*--*--*--*--*--*--*--*--*--
 ;;;--------------------------------------------------------------------------------------;;;
+PaletteShake: ;Set timer for duration before calling. Standard duration = $4D
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+    LDX #$00
+    LDY #$00
+    
+    LDA timer
+    CMP #$00
+    BEQ ReturnFromPaletteShake
+    LDA timer
+    AND #%00000100
+    CMP #%00000100
+    BNE ReturnFromPaletteShake
+    INC colltemp2
+    LDA colltemp2
+    CMP #$01
+    BEQ PSPal1
+    CMP #$02
+    BEQ PSPal2
+    CMP #$03
+    BEQ PSPal3
+    CMP #$00
+    BEQ PSPal4
+PSPal1:
+    LDA #$00
+    STA bgpalette
+    JMP FinishPaletteShake
+PSPal2:
+    LDA #$55
+    STA bgpalette
+    JMP FinishPaletteShake
+PSPal3:
+    LDA #$00
+    STA colltemp2
+    LDA #$AA
+    STA bgpalette
+    JMP FinishPaletteShake
+PSPal4:
+    LDA #$FF
+    STA bgpalette
+FinishPaletteShake:
+    LDA $2002
+    LDA #$23
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+    JSR LoadSingleAttributes
+ReturnFromPaletteShake:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+
+
 
 VictoryCutscene:    ;timer will run still
                     ;use colltemp1, etc. as counters for cutscene animation stages
@@ -4105,6 +4240,40 @@ LoadNametable:  ;copied to scratch
         TAX
         PLA
         RTS
+
+
+AddLavaToNametable:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+;set $2007 to last entry in nametable. Write to both? Or would that mess up the transitions?
+    LDA $2002
+    LDA #$23
+    STA $2006
+    LDA #$BF
+    STA $2006
+    LDA #$00
+    STA colltemp1
+    LDA #$30    ;tile id for the row
+    PHA
+    LDX #$20    ;32 tiles in a row     
+    LDY #$03    ;tile id row counter
+AddLavaLoop:
+    PLA
+    STA colltemp1
+
+
+ReturnFromAddLavaToNametable:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
 ;----------------------------------------------------------------------------------------
 LoadSingleAttributes:
 ;To run using the palette map in the AREA array, we need two x counters and a y iterator. The y iterates though the palette map
