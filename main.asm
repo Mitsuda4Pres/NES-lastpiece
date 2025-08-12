@@ -135,6 +135,7 @@ entcollisionret:    .res 3                          ;array to return the "ids" o
 playeroverbox:      .res 1
 lavacounter:        .res 1
 lavatimer:          .res 1
+lavaaddress:        .res 2
 cutsceneid:         .res 1                          ;00 - none, 01 - lava shake, 02 - victory
 metatile:           .res .sizeof(Metatile)          ;8b
 entitybuffer:       .res .sizeof(Entity)            ;14b
@@ -366,7 +367,7 @@ HandleCutscene:          ;make sure relevant variables, esp custceneid, for a sc
     ExitCutscene1:
         LDA #$08        ;enter lava state
         STA gamestate
-        LDA #$00
+        LDA #$00        ;restore original palette
         STA bgpalette    
         LDA $2002
         LDA #$23
@@ -392,7 +393,7 @@ HandleLava:             ;anything else we needto do here? Once the top row anima
         LDA #$80        ;time between lava flow advances
         STA lavatimer
     FinishHandleLava:
-        JSR AddLavaToNametable
+        JSR AddLavaToTileBuffer
 DoneCheckForGameState:
 INITSPRITES:
     LDY #$00
@@ -3901,12 +3902,6 @@ FinishedBlankWrite:
 
 
 
-
-
-
-
-
-
 LoadNametable:  ;copied to scratch
                 ;need an IN argument to hold whether Loading for "level" or "nextarea"
         PHA
@@ -4242,31 +4237,65 @@ LoadNametable:  ;copied to scratch
         RTS
 
 
-AddLavaToNametable:
+
+;This should work but it needs to run during vblank
+AddLavaToTileBuffer: ;adds one row of lava tiles to nametable for each value in lavacounter. Alternates sprite referenec per row.
     PHA
     TXA
     PHA
     TYA
     PHA
+    
+    LDA lavacounter
+    ASL
+    ASL
+    ASL
+    ASL
+    ASL ;x32
+    STA colltemp2
+    LDA #$C0
+    SEC
+    SBC colltemp2
+    STA colltemp2   ;jump back however many rows lavacounter requires
 
 ;set $2007 to last entry in nametable. Write to both? Or would that mess up the transitions?
-    LDA $2002
+    ;LDA $2002
     LDA #$23
-    STA $2006
-    LDA #$BF
-    STA $2006
-    LDA #$00
-    STA colltemp1
+    STA lavaaddress
+    LDA colltemp2       ;first tile of last row
+    STA lavaaddress+1
     LDA #$30    ;tile id for the row
-    PHA
-    LDX #$20    ;32 tiles in a row     
-    LDY #$03    ;tile id row counter
-AddLavaLoop:
-    PLA
     STA colltemp1
-
-
-ReturnFromAddLavaToNametable:
+    LDX #$00    ;32 tiles in a row     
+    LDY #$00    ;tile id row counter, loop 4 times
+AddLavaLoop:
+    LDA colltemp1
+    STA tilebufferA, x
+    INY
+    INC colltemp1
+    TYA
+    CMP #$04
+    BNE IncreaseLavaX
+    LDY #$00
+    DEC colltemp1
+    DEC colltemp1
+    DEC colltemp1
+    DEC colltemp1
+IncreaseLavaX:
+    INX
+    TXA
+    CMP #$20
+    BNE AddLavaLoop
+    ;LDX #$20
+    ;PLA         ;grab lavacounter (how high is the lava?)
+    ;SEC
+    ;SBC #$01
+    ;CMP #$00
+    ;BEQ ReturnFromAddLavaToTileBuffer
+    ;PHA
+    ;LDA colltemp1       ;base tile id
+    ;EOR #%00000111      ;00000011 bceomes 00000100, and vice versa (toggle 3 and 4 for the sprite id row)
+ReturnFromAddLavaToTileBuffer:
     PLA
     TAY
     PLA
@@ -4590,6 +4619,26 @@ VBLANK:
     PHA
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+
+    LDA gamestate
+    CMP #$08        ;is lava flowing?
+    BNE NoLava
+    LDA $2002
+    LDA lavaaddress
+    STA $2006
+    LDA lavaaddress+1
+    STA $2006
+    LDX #$00
+    ;LDY #$00
+AddLavaToNametable:
+    LDA tilebufferA, x
+    STA $2007
+    INX
+    TXA
+    CMP #$20
+    BNE AddLavaToNametable
+
+NoLava:
 ;begin populating the OAM data in memory
     LDX #$00        ;x will index mem locations of entity data (getter)
     LDA #$00        ;low byte of graphics page $0200
@@ -4598,6 +4647,10 @@ VBLANK:
     LDA #$02        ;high byte of graphics page $0200
     STA spritemem+1
 
+;TODO: Damn, to save cycles do I need to alter my ENTITIES structure to have y, spr, pal, x?
+; Even better, shift the metatile loading entirely out of vblank.
+; At the end of the gameloop updates, write OAM data in order to a new RAM area
+; Read sequentially from RAM so no calc done in vblank.
 DRAWENTITIES:               ;Load info into a Metatile struct then draw
     LDX #$00
 BeginLoadEntityLoop: 
@@ -4985,8 +5038,8 @@ CONTENTS0:
     .byte $8C   ;offset to block table
 ENTS0:
     .byte $84, $04       ;snake at (8, 4)
-    ;.byte $52, $00    ;DEBUG: the last piece @ (15,14)    
-    .byte $2D, $04
+    .byte $52, $00    ;DEBUG: the last piece @ (15,14)    
+    ;.byte $2D, $04
     .byte $FF           ;end of list
 COLLMAP0: ;will reduce to 60 bytes
     .byte %01011001, %01010101, %01111111, %11111101
