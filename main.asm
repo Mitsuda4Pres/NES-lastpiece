@@ -1,9 +1,9 @@
 ;TODO: 8/7 - Fix climb down bug on screen 3 that pushes player left
-;   8/7 - Auto jump bug when landing on vine
+;   8/7 - Auto jump bug when landing on row 4?
 ;   8/7 - Collision bug when trying to jump sideways through a one tile opening.
 ;   8/7 - When climbing to top of vine, character "vibrates". Make it so he just chills until jumping off
 ;   8/7 - "Vibrates" when vertical in a one tile wide space
-
+;   8/12 - Player missing half sprites on lava load
 
 .segment "HEADER"
 
@@ -23,7 +23,7 @@
 ;Game Constants (make sure to use #CONSTANT when calling for value, not address)
 GRAVITY         = $03
 JUMPFORCE       = $50
-TERMINALVEL     = $04
+TERMINALVEL     = $02
 ;;; PPU registers.
 PPUCTRL         = $2000
 PPUMASK         = $2001
@@ -40,12 +40,14 @@ APUSTATUS       = $4015
 JOYPAD1         = $4016
 JOYPAD2         = $4017
 
-;;;Custom registers/maps
-AREABANK        = $0440     ;128 bytes for 64 areas.
-UI              = $04C0     ;64 bytes
-COLLMAPBANK     = $0500     ;one page is 256 bytes. Is this enough or do I bleed into 0600? A colliion map will always be 60 bytes rn.
-TEXTBANK        = $0580
-ENTITIES        = $0600
+;;;Custom registers/maps. Save $0300 for audio
+AREABANK        = $0400     ;64 bytes for 32 areas.
+UI              = $0480     ;64 bytes
+COLLMAPBANK     = $04C0     ;one page is 256 bytes. Is this enough or do I bleed into 0600? A colliion map will always be 60 bytes rn.
+TEXTBANK        = $0500     ;Don't need this much for the TEXTBANK so new RAM items can use back half of $0500
+METATILES       = $0600     ;16 bytes per tile (uncompressed for speed).
+ENTITIES        = $0700
+
 
 ;If I do a 2 bit coll map, each tile can have 4 properties: "not there", "solid", "climbable", "damaging"
 .scope EntityType
@@ -196,7 +198,8 @@ CLEARMEM:
     STA controller
     INX
     BNE CLEARMEM
-
+    LDA #$FF
+    STA METATILES
     LDX #$00
     LDY #$00
 
@@ -339,9 +342,14 @@ JumpToScreenTransition:
 HandleGameOver:
         LDA timer
         CMP #$00
-        BEQ JumpToInitGameOver
+        BEQ InitGameOver
         JMP waitfordrawtocomplete
-    JumpToInitGameOver:
+    InitGameOver:
+        LDA #$00
+        STA lavacounter
+        STA lavatimer
+        STA lastpiece
+
         LDA #<GAMEOVERSCREEN
         STA ptr           ;utilize block table pointer for text load
         LDA #>GAMEOVERSCREEN
@@ -676,30 +684,29 @@ PlayerAscend:
     STA playerdata+Entity::velocity
     JMP CheckCollisions
 PlayerDescend:
-    TAX
-    EOR #%11111111  ;invert bits
-    CLC
-    ADC #$01        ;add 1
-    CLC
-    LSR             ;divide by 4
-    LSR
-    LSR
-    CMP #TERMINALVEL
-    BPL SetTerminalVelocity
-    STA playerdata+Entity::velocity
-    JMP ChangeYPos
-SetTerminalVelocity:
-    LDA #TERMINALVEL
-    STA playerdata+Entity::velocity
-ChangeYPos:
-    LDA playerdata+Entity::ypos
-    CLC
-    ADC playerdata+Entity::velocity
-    STA playerdata+Entity::ypos
-    TXA             ;get starting velocity back
-    SEC
-    SBC #GRAVITY
-    STA playerdata+Entity::velocity
+    ;TAX
+    ;EOR #%11111111  ;invert bits
+    ;CLC
+    ;ADC #$01        ;add 1
+    ;CLC
+    ;LSR             ;divide by 4
+    ;LSR
+    ;LSR
+    ;STA playerdata+Entity::velocity
+;ChangeYPos:
+    ;LDA playerdata+Entity::ypos
+    ;CLC
+    ;ADC playerdata+Entity::velocity
+    ;STA playerdata+Entity::ypos
+    ;TXA             ;get starting velocity back
+    ;SEC
+    ;SBC #GRAVITY
+    ;STA playerdata+Entity::velocity
+    INC playerdata+Entity::ypos
+    INC playerdata+Entity::ypos
+    INC playerdata+Entity::ypos
+
+JumpToCheckCollisions:
     JMP CheckCollisions
 CheckClimbingState:
 ;check climbing state
@@ -795,6 +802,7 @@ PlayerFall:
     ;to get it working, fall at a rate of 2 pps. Math later.
     INC playerdata+Entity::ypos
     INC playerdata+Entity::ypos
+    INC playerdata+Entity::ypos
 
     JMP CheckCollisions
 PlayerIdle:
@@ -809,6 +817,60 @@ PlayerIdle:
     STA playerdata+Entity::brspr
 
 CheckCollisions:;check for collisions from new position
+    LDA gamestate           ;check lava first
+    CMP #$08
+    BNE ProcessCollisions
+    LDA lavacounter
+    ASL
+    ASL
+    ASL ;x8
+    STA colltemp1
+    LDA #$F0        ;240, bottom of screen
+    SEC
+    SBC colltemp1
+    STA colltemp1   ;real Y pos of lava surface
+    SEC
+    SBC #$10        ;player height
+    SEC
+    SBC playerdata+Entity::ypos
+    BCS ProcessCollisions       ;no hit
+HandleLavaHit:
+    ;check invincible
+    LDA playerdata+Entity::state
+    AND #%00001000
+    CMP #%00001000
+    BEQ ProcessInvincibleOnLava
+
+    ;get hurt
+    DEC playerdata+Entity::health
+    LDA playerdata+Entity::health
+    CMP #$00
+    BEQ JumpToDead
+    LDA playerdata+Entity::state
+    ORA #%00001000          ;turn on invincible
+    STA playerdata+Entity::state
+    LDA #$8F
+    STA timer
+    ;jump up
+    LDA playerdata+Entity::state
+    AND #%11101101      ;turn off walking and climbing
+    ORA #%00000100      ;turn on jumping
+    STA playerdata+Entity::state
+    LDA #JUMPFORCE
+    STA playerdata+Entity::velocity
+
+    JMP ProcessCollisions
+JumpToDead:
+    JMP Dead
+ProcessInvincibleOnLava:
+    LDA playerdata+Entity::state
+    AND #%00000100
+    CMP #%00000100
+    BEQ ProcessCollisions           ;ignore if jumping
+    LDA colltemp1
+    SEC
+    SBC #$10
+    STA playerdata+Entity::ypos     ;force player to stand on top of lava
 ProcessCollisions:                  ;get return values from all collisions and process
     ;LDA collreturnval   ;00 nothing, 01 solid, 10 climbable, 11 damage!
 CheckAgainstEntities:
@@ -1066,12 +1128,15 @@ HandleSolidDown:
     LDA playerdata+Entity::ypos
     AND #%11110000
     STA playerdata+Entity::ypos
+    LDA #$00
+    STA playerdata+Entity::velocity
     JMP EndProcessPlayer
 HandleNothingDown:
     LDA playerdata+Entity::state
     TAX
     AND #%00000100
-    BNE EndProcessPlayer
+    CMP #%00000100
+    BEQ EndProcessPlayer
     TXA
     AND #%00010000
     BNE EndProcessPlayer
@@ -1225,6 +1290,8 @@ NextEnemyType:
 EndProcessEnemiesLoop:
     LDA #$FF
     STA ENTITIES, x ;set endpoint on entities array
+
+    JSR WriteMetatilesToRAM
 waitfordrawtocomplete:
     LDA drawcomplete
     CMP #$01
@@ -1330,6 +1397,8 @@ SCREENTRANLOOP:
         LDA #$01
         STA checkvar    ;set checkvar to 1 so subroutine does not mess with stack
         JSR WriteEntityFromBuffer ;Subroutine to write all the changes made to player this frame
+        JSR WriteMetatilesToRAM        
+
     CheckScrollDirection:
         LDA exitdir
         CMP #$01
@@ -1409,6 +1478,17 @@ SCREENTRANLOOP:
         ORA #%10000000
         STA $2000
 
+        LDA lastpiece
+        CMP #$01
+        BNE LoadNormalGame
+        LDA #$00
+        STA lavacounter
+        LDA #$80
+        STA lavatimer
+        LDA #$08
+        STA gamestate
+        JMP FillEntities
+    LoadNormalGame:
         LDA #$01                    ;set gamestate to main game
         STA gamestate
         ;Finally add the new area entities
@@ -1498,8 +1578,14 @@ PlayerCollisionDetection:
             LDA playerdata+Entity::ypos
             CMP #$00    ;Top of screen?
             BEQ ExitUp
-            ;CMP #$FF
-            ;BEQ ExitUp
+            CMP #$FF
+            BEQ ExitUp
+            CMP #$FE
+            BEQ ExitUp
+            CMP #$FD
+            BEQ ExitUp
+            CMP #$FC
+            BEQ ExitUp  ;Jump will sometimes decrement 5 pixel places
             LSR         ;divide by 16
             LSR         ;meta y of player's head
             LSR
@@ -3191,6 +3277,8 @@ WriteEntityFromBuffer: ;can this loop with y?   Call this is a subroutine to upd
 ReturnFromWriteEntity:
     RTS
 
+
+
 ;;;--------------------Load Text From ROM--------------------------------;;;
 ;;;---Use to load prewritten text like title screen or any story text----;;;
 ;;;---Destination: TEXTBANK = $0580--------------------------------------;;;
@@ -3781,85 +3869,306 @@ EndLoadEntitiesFromROM:
     RTS
 
 
+
+WriteMetatilesToRAM:
+        PHA
+        TXA
+        PHA
+        TYA
+        PHA
+
+        LDX #$00
+        LDY #$00
+    BeginLoadEntityLoop: 
+        LDA ENTITIES, x      ;check if there are no sprites at all
+        CMP #$FF
+        BNE LoadEntityLoop
+        JMP ReturnFromWriteMetatiles
+    LoadEntityLoop:
+        LDA ENTITIES, x     ;type
+        CMP #$00            ;type nothing
+        BEQ AdvanceToNextEntity
+        JMP ContinueCurrentEntity
+    AdvanceToNextEntity:
+        TXA
+        CLC
+        ADC #$0C
+        TAX
+        JMP BeginLoadEntityLoop
+    ContinueCurrentEntity:
+        INX ;go past type
+        LDA ENTITIES, x     ;xpos
+        STA metatile+Metatile::xpos
+        INX
+        LDA ENTITIES, x     ;ypos
+        STA metatile+Metatile::ypos
+        INX
+        LDA ENTITIES, x
+        STA metatile+Metatile::state
+        INX
+        LDA ENTITIES, x     ;palette
+        STA metatile+Metatile::pal
+    ;What conditional for alternating frames?
+    ;Frame will be set before draw routine and sent in
+    LoadSprite:
+        INX
+        LDA ENTITIES, x     ;tlspr
+        STA metatile+Metatile::spritetl
+        INX
+        LDA ENTITIES, x     ;trspr
+        STA metatile+Metatile::spritetr
+        INX
+        LDA ENTITIES, x     ;blspr
+        STA metatile+Metatile::spritebl
+        INX
+        LDA ENTITIES, x     ;brspr
+        STA metatile+Metatile::spritebr
+    EndLoadSprite:
+        INX                 ;env
+        INX                 ;metax
+        INX                 ;metay
+        INX                 ;next entity::type OR stop byte
+    CheckMetatileFacing:
+        LDA metatile+Metatile::state
+        AND #%11000000
+        CMP #%10000000
+        BNE DRAWMETATILEHRZMIRROR
+    ;-----------------------------------------------------------------------------
+    DRAWMETATILE: ;in--struct of meta tile data
+        LDA metatile+Metatile::ypos ; y
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::spritetl ; tile
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::pal ; palette etc
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::xpos   ; x
+        STA METATILES, y
+        INY
+
+        ;bottom left sprite
+        LDA metatile+Metatile::ypos ; y
+        CLC
+        ADC #$08   ;Add 8 pixels to y-pos for second sprite
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::spritebl ; tile
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::pal   ;palette
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::xpos ; x position
+        STA METATILES, y
+        INY
+
+        ;top right sprite
+        LDA metatile+Metatile::ypos
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::spritetr     ;same as top left but we will flip it and add 8 to xpos
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::pal     ;palette %01000001   palette 1, flip horizontal
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::xpos
+        CLC
+        ADC #$08
+        STA METATILES, y
+        INY
+
+        ;bottom right
+        LDA metatile+Metatile::ypos ; y
+        CLC
+        ADC #$08   ;Add 8 pixels to y-pos for second sprite
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::spritebr   
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::pal   ;palette with h-flip
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::xpos
+        CLC
+        ADC #$08
+        STA METATILES, y
+        INY
+        JMP ClearMetatile
+
+    ;TODO: Replace this whole repetitive function with a simple rewrite of the palette variable
+    DRAWMETATILEHRZMIRROR: ;in--struct of meta tile data
+    ;swap tiles and set horizontal flip
+        LDA metatile+Metatile::ypos ; y
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::spritetr ; tile
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::pal ; palette etc
+        ORA #$40
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::xpos   ; x
+        STA METATILES, y
+        INY
+
+        ;bottom left sprite
+        LDA metatile+Metatile::ypos ; y
+        CLC
+        ADC #$08   ;Add 8 pixels to y-pos for second sprite
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::spritebr ; tile
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::pal   ;palette
+        ORA #$40
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::xpos ; x position
+        STA METATILES, y
+        INY
+
+        ;top right sprite
+        LDA metatile+Metatile::ypos
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::spritetl     ;same as top left but we will flip it and add 8 to xpos
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::pal     ;palette %01000001   palette 1, flip horizontal
+        ORA #$40
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::xpos
+        CLC
+        ADC #$08
+        STA METATILES, y
+        INY
+
+        ;bottom right
+        LDA metatile+Metatile::ypos ; y
+        CLC
+        ADC #$08   ;Add 8 pixels to y-pos for second sprite
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::spritebl   
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::pal   ;palette with h-flip
+        ORA #$40
+        STA METATILES, y
+        INY
+        LDA metatile+Metatile::xpos
+        CLC
+        ADC #$08
+        STA METATILES, y
+        INY
+        ;JMP DoneDrawingMetatile
+    ClearMetatile:
+        LDA #$00
+        STA metatile+Metatile::xpos
+        STA metatile+Metatile::ypos
+    DoneDrawingMetatile:
+        LDA ENTITIES, x
+        CMP #$FF
+        BEQ ReturnFromWriteMetatiles
+        JMP LoadEntityLoop
+
+    ReturnFromWriteMetatiles:
+        LDA #$FF
+        STA METATILES, y    ;this end-of-file marker could be buggy. $FF should not be a possible y value, but what if it happens?
+        PLA
+        TAY
+        PLA
+        TAX
+        PLA
+        RTS
+
+
 ;----------------------------------------------------------------
 SetupNextArea:  ;gets pointer data from ROM (AREA0, AREA1, ...) and stores it into and Area struct called nextarea
-    PHA
-    TXA
-    PHA
-    TYA
-    PHA
-    LDX nextareaid
-    LDA AREABANK, x
-    STA nextarea+Area::selfaddr1
-    INX
-    LDA AREABANK, x
-    STA nextarea+Area::selfaddr2
-    LDY #$07                            ;First byte of "contents" section in AREA array. Contains offset of the entities table
-    LDA (nextarea+Area::selfaddr1), y   ;get block table offset (probably $07)
-    STA nextarea+Area::entaddr1          ;use as variable for a moment
-    LDA nextarea+Area::selfaddr1
-    CLC
-    ADC nextarea+Area::entaddr1
-    STA nextarea+Area::entaddr1
-    ;TAY                                 ;put that value into X
-    ;LDA (nextarea+Area::selfaddr1), y     ;get the value of X added to lowbyte of the array address. Should be first byte in block table.
-    ;STA nextarea+Area::btaddr1
-    LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
-    STA nextarea+Area::entaddr2
-    BCS NAIncrementHighByteENT          ;if carry was set from adding the low byte, that means it crossed a page
-    JMP NAContinueToLoadCM
-NAIncrementHighByteENT:
-    INC nextarea+Area::entaddr2
-NAContinueToLoadCM:
-    LDY #$08
-    LDA (nextarea+Area::selfaddr1), y   ;get collmap offset, repeat process
-    STA nextarea+Area::cmaddr1          ;use as variable for a moment
-    LDA nextarea+Area::selfaddr1
-    CLC
-    ADC nextarea+Area::cmaddr1
-    STA nextarea+Area::cmaddr1
-    LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
-    STA nextarea+Area::cmaddr2
-    BCS NAIncrementHighByteCM
-    JMP NAContinueToLoadPM
-NAIncrementHighByteCM:
-    INC nextarea+Area::cmaddr2
-NAContinueToLoadPM:
-    LDY #$09
-    LDA (nextarea+Area::selfaddr1), y   ;get collmap offset, repeat process
-    STA nextarea+Area::paladdr1          ;use as variable for a moment
-    LDA nextarea+Area::selfaddr1
-    CLC
-    ADC nextarea+Area::paladdr1
-    STA nextarea+Area::paladdr1
-    LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
-    STA nextarea+Area::paladdr2
-    BCS NAIncrementHighBytePM
-    JMP NAContinueToLoadBT
-NAIncrementHighBytePM:
-    INC nextarea+Area::paladdr2
-NAContinueToLoadBT:
-    LDY #$0A
-    LDA (nextarea+Area::selfaddr1), y   ;get entity table offset, repeat process
-    STA nextarea+Area::btaddr1          ;use as variable for a moment
-    LDA nextarea+Area::selfaddr1
-    CLC
-    ADC nextarea+Area::btaddr1
-    STA nextarea+Area::btaddr1
-    LDA nextarea+Area::selfaddr2        
-    STA nextarea+Area::btaddr2
-    BCS NAIncrementHighByteBT
-    JMP NAReturn
-NAIncrementHighByteBT:
-    INC nextarea+Area::btaddr2
-NAReturn:
-    ;Done. "nextarea" struct is populated.
-    PLA
-    TAY
-    PLA
-    TAX
-    PLA
-    RTS
+        PHA
+        TXA
+        PHA
+        TYA
+        PHA
+        LDX nextareaid
+        LDA AREABANK, x
+        STA nextarea+Area::selfaddr1
+        INX
+        LDA AREABANK, x
+        STA nextarea+Area::selfaddr2
+        LDY #$07                            ;First byte of "contents" section in AREA array. Contains offset of the entities table
+        LDA (nextarea+Area::selfaddr1), y   ;get block table offset (probably $07)
+        STA nextarea+Area::entaddr1          ;use as variable for a moment
+        LDA nextarea+Area::selfaddr1
+        CLC
+        ADC nextarea+Area::entaddr1
+        STA nextarea+Area::entaddr1
+        ;TAY                                 ;put that value into X
+        ;LDA (nextarea+Area::selfaddr1), y     ;get the value of X added to lowbyte of the array address. Should be first byte in block table.
+        ;STA nextarea+Area::btaddr1
+        LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
+        STA nextarea+Area::entaddr2
+        BCS NAIncrementHighByteENT          ;if carry was set from adding the low byte, that means it crossed a page
+        JMP NAContinueToLoadCM
+    NAIncrementHighByteENT:
+        INC nextarea+Area::entaddr2
+    NAContinueToLoadCM:
+        LDY #$08
+        LDA (nextarea+Area::selfaddr1), y   ;get collmap offset, repeat process
+        STA nextarea+Area::cmaddr1          ;use as variable for a moment
+        LDA nextarea+Area::selfaddr1
+        CLC
+        ADC nextarea+Area::cmaddr1
+        STA nextarea+Area::cmaddr1
+        LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
+        STA nextarea+Area::cmaddr2
+        BCS NAIncrementHighByteCM
+        JMP NAContinueToLoadPM
+    NAIncrementHighByteCM:
+        INC nextarea+Area::cmaddr2
+    NAContinueToLoadPM:
+        LDY #$09
+        LDA (nextarea+Area::selfaddr1), y   ;get collmap offset, repeat process
+        STA nextarea+Area::paladdr1          ;use as variable for a moment
+        LDA nextarea+Area::selfaddr1
+        CLC
+        ADC nextarea+Area::paladdr1
+        STA nextarea+Area::paladdr1
+        LDA nextarea+Area::selfaddr2        ;may eventually need to robustify for if btaddr crosses to next memory page, selfaddr2 will need to INC
+        STA nextarea+Area::paladdr2
+        BCS NAIncrementHighBytePM
+        JMP NAContinueToLoadBT
+    NAIncrementHighBytePM:
+        INC nextarea+Area::paladdr2
+    NAContinueToLoadBT:
+        LDY #$0A
+        LDA (nextarea+Area::selfaddr1), y   ;get entity table offset, repeat process
+        STA nextarea+Area::btaddr1          ;use as variable for a moment
+        LDA nextarea+Area::selfaddr1
+        CLC
+        ADC nextarea+Area::btaddr1
+        STA nextarea+Area::btaddr1
+        LDA nextarea+Area::selfaddr2        
+        STA nextarea+Area::btaddr2
+        BCS NAIncrementHighByteBT
+        JMP NAReturn
+    NAIncrementHighByteBT:
+        INC nextarea+Area::btaddr2
+    NAReturn:
+        ;Done. "nextarea" struct is populated.
+        PLA
+        TAY
+        PLA
+        TAX
+        PLA
+        RTS
 
 
 
@@ -3872,28 +4181,28 @@ NAReturn:
 ;LoadNametable loads one name table (not both). Need to make a way to call for "level" then "nextarea" when transitioning screens
 
 LoadBlankNametable:
-    PHA
-    TXA
-    PHA
-    TYA
-    PHA
+        PHA
+        TXA
+        PHA
+        TYA
+        PHA
 
-    LDA #$D0
-    LDX #$04
-    LDY #$00
-BlankNTLoop:
-    STA $2007
-    INY
-    BNE BlankNTLoop
-    DEX
-    BNE BlankNTLoop
-FinishedBlankWrite:
-    PLA
-    TAY
-    PLA
-    TAX
-    PLA
-    RTS
+        LDA #$D0
+        LDX #$04
+        LDY #$00
+    BlankNTLoop:
+        STA $2007
+        INY
+        BNE BlankNTLoop
+        DEX
+        BNE BlankNTLoop
+    FinishedBlankWrite:
+        PLA
+        TAY
+        PLA
+        TAX
+        PLA
+        RTS
 
 
 
@@ -4240,161 +4549,195 @@ LoadNametable:  ;copied to scratch
 
 ;This should work but it needs to run during vblank
 AddLavaToTileBuffer: ;adds one row of lava tiles to nametable for each value in lavacounter. Alternates sprite referenec per row.
-    PHA
-    TXA
-    PHA
-    TYA
-    PHA
-    
-    LDA lavacounter
-    ASL
-    ASL
-    ASL
-    ASL
-    ASL ;x32
-    STA colltemp2
-    LDA #$C0
-    SEC
-    SBC colltemp2
-    STA colltemp2   ;jump back however many rows lavacounter requires
+        PHA
+        TXA
+        PHA
+        TYA
+        PHA
+        
+        LDA lavacounter
+        ASL
+        ASL
+        ASL
+        ASL
+        ASL ;x32
+        STA colltemp2
+        LDA #$C0
+        SEC
+        SBC colltemp2
+        STA lavaaddress+1   ;jump back however many rows lavacounter requires
 
-;set $2007 to last entry in nametable. Write to both? Or would that mess up the transitions?
-    ;LDA $2002
-    LDA #$23
-    STA lavaaddress
-    LDA colltemp2       ;first tile of last row
-    STA lavaaddress+1
-    LDA #$30    ;tile id for the row
-    STA colltemp1
-    LDX #$00    ;32 tiles in a row     
-    LDY #$00    ;tile id row counter, loop 4 times
-AddLavaLoop:
-    LDA colltemp1
-    STA tilebufferA, x
-    INY
-    INC colltemp1
-    TYA
-    CMP #$04
-    BNE IncreaseLavaX
-    LDY #$00
-    DEC colltemp1
-    DEC colltemp1
-    DEC colltemp1
-    DEC colltemp1
-IncreaseLavaX:
-    INX
-    TXA
-    CMP #$20
-    BNE AddLavaLoop
-    ;LDX #$20
-    ;PLA         ;grab lavacounter (how high is the lava?)
-    ;SEC
-    ;SBC #$01
-    ;CMP #$00
-    ;BEQ ReturnFromAddLavaToTileBuffer
-    ;PHA
-    ;LDA colltemp1       ;base tile id
-    ;EOR #%00000111      ;00000011 bceomes 00000100, and vice versa (toggle 3 and 4 for the sprite id row)
-ReturnFromAddLavaToTileBuffer:
-    PLA
-    TAY
-    PLA
-    TAX
-    PLA
-    RTS
+    ;set $2007 to last entry in nametable. Write to both? Or would that mess up the transitions?
+        ;LDA $2002
+        LDA lavacounter
+        CMP #$07
+        BPL CheckLavaQuad3
+        LDA #$23            ;lavacounter 0-8
+        STA lavaaddress
+        JMP SetLavaAddLowByte
+    CheckLavaQuad3:
+        CMP #$0F
+        BPL CheckLavaQuad2
+        LDA #$22            ;lavacounter 9-16
+        STA lavaaddress
+        JMP SetLavaAddLowByte
+    CheckLavaQuad2:
+        CMP #$17
+        BPL CheckLavaQuad1
+        LDA #$21            ;lavacounter 17-24
+        STA lavaaddress
+        JMP SetLavaAddLowByte
+    CheckLavaQuad1:
+        CMP #$1F
+        BPL ReturnFromAddLavaToTileBuffer
+        LDA #$20
+        STA lavaaddress
+    SetLavaAddLowByte:
+        LDA lavacounter
+        LSR
+        BCC IncrementLavaTileID
+        LDA #$40    ;tile id for the row
+        STA colltemp1
+        JMP PreLavaLoop
+    IncrementLavaTileID:
+        LDA #$30
+        STA colltemp1
+    PreLavaLoop:
+        LDX #$00    ;32 tiles in a row     
+        LDY #$04    ;tile id row counter, loop 4 times
+    AddLavaLoop:
+        LDA colltemp1
+        DEY
+        STA tilebufferA, x
+        INC colltemp1
+        TYA
+        CMP #$00
+        BNE IncreaseLavaX
+        LDY #$04
+        DEC colltemp1
+        DEC colltemp1
+        DEC colltemp1
+        DEC colltemp1
+    IncreaseLavaX:
+        INX
+        TXA
+        CMP #$20
+        BNE AddLavaLoop
+        ;LDX #$20
+        ;PLA         ;grab lavacounter (how high is the lava?)
+        ;SEC
+        ;SBC #$01
+        ;CMP #$00
+        ;BEQ ReturnFromAddLavaToTileBuffer
+        ;PHA
+        ;LDA colltemp1       ;base tile id
+        ;EOR #%00000111      ;00000011 bceomes 00000100, and vice versa (toggle 3 and 4 for the sprite id row)
+    ReturnFromAddLavaToTileBuffer:
+        PLA
+        TAY
+        PLA
+        TAX
+        PLA
+        RTS
+
+
+
+
+
+
 
 ;----------------------------------------------------------------------------------------
 LoadSingleAttributes:
-;To run using the palette map in the AREA array, we need two x counters and a y iterator. The y iterates though the palette map
-;and the "inside" counter runs to 
-    PHA
-    TXA
-    PHA
-    TYA
-    PHA
-    ;set address before calling because there are two, one for each nametable
-    ;LDA $2002       ;reset latch
-    ;LDA #$23        ;High byte of $23CO address (attributes)
-    ;STA $2006
-    ;LDA #$C0        ;Low byte
-    ;STA $2006
-    LDX #$40        ;loop counter 64b
-    LDY #$00
-    ;LDA #$00        ;Attribute value
-    LDA bgpalette   ;single palette chooser
-LoadSingleAttributesLoop:
-    STA $2007
-    DEX
-    BNE LoadSingleAttributesLoop
-ReturnFromLoadSingleAttributes:
-    PLA
-    TAY
-    PLA
-    TAX
-    PLA
-    RTS
+    ;To run using the palette map in the AREA array, we need two x counters and a y iterator. The y iterates though the palette map
+    ;and the "inside" counter runs to 
+        PHA
+        TXA
+        PHA
+        TYA
+        PHA
+        ;set address before calling because there are two, one for each nametable
+        ;LDA $2002       ;reset latch
+        ;LDA #$23        ;High byte of $23CO address (attributes)
+        ;STA $2006
+        ;LDA #$C0        ;Low byte
+        ;STA $2006
+        LDX #$40        ;loop counter 64b
+        LDY #$00
+        ;LDA #$00        ;Attribute value
+        LDA bgpalette   ;single palette chooser
+    LoadSingleAttributesLoop:
+        STA $2007
+        DEX
+        BNE LoadSingleAttributesLoop
+    ReturnFromLoadSingleAttributes:
+        PLA
+        TAY
+        PLA
+        TAX
+        PLA
+        RTS
 
 
 
 
 ;Set attribute register to $2006 BEFORE calling!!!
 LoadAttributes:
-;To run using the palette map in the AREA array, we need two x counters and a y iterator. The y iterates though the palette map
-;and the "inside" counter runs to 
-    PHA
-    TXA
-    PHA
-    TYA
-    PHA
-    ;set address before calling because there are two, one for each COLLMAPnametable
-    ;LDA $2002       ;reset latch
-    ;LDA #$23        ;High byte of $23CO address (attributes)
-    ;STA $2006
-    ;LDA #$C0        ;Low byte
-    ;STA $2006
-    LDX #$40        ;loop counter
-    LDY #$00
-    ;LDA #$00        ;Attribute value
-    ;LDA bgpalette   ;single palette chooser
-LoadAttributesLoop:
-    LDA (palptr), y ;get palette info from palettemap
-    STA $2007
-    INY
-    DEX
-    BNE LoadAttributesLoop
-ReturnFromLoadAttributes:
-    PLA
-    TAY
-    PLA
-    TAX
-    PLA
-    RTS
+        ;To run using the palette map in the AREA array, we need two x counters and a y iterator. The y iterates though the palette map
+        ;and the "inside" counter runs to 
+        PHA
+        TXA
+        PHA
+        TYA
+        PHA
+        ;set address before calling because there are two, one for each COLLMAPnametable
+        ;LDA $2002       ;reset latch
+        ;LDA #$23        ;High byte of $23CO address (attributes)
+        ;STA $2006
+        ;LDA #$C0        ;Low byte
+        ;STA $2006
+        LDX #$40        ;loop counter
+        LDY #$00
+        ;LDA #$00        ;Attribute value
+        ;LDA bgpalette   ;single palette chooser
+    LoadAttributesLoop:
+        LDA (palptr), y ;get palette info from palettemap
+        STA $2007
+        INY
+        DEX
+        BNE LoadAttributesLoop
+    ReturnFromLoadAttributes:
+        PLA
+        TAY
+        PLA
+        TAX
+        PLA
+        RTS
 
 
 
 ;--*--*--*--*--*--*--*Load Collision Map subroutine*--*--*--*--*--*--*--*--*--*
 LoadCollMap:
-    PHA
-    TXA
-    PHA
-    TYA
-    PHA
-    LDY #$00
-    LDX #$00
-WriteCMLoop:
-    LDA (cmptr), y
-    STA COLLMAPBANK, x
-    INY
-    INX
-    CPY #$3C    ;60 bytes in COLLMAP0
-    BNE WriteCMLoop
-ReturnFromLoadCollMap:
-    PLA
-    TAY
-    PLA
-    TAX
-    PLA
-    RTS
+        PHA
+        TXA
+        PHA
+        TYA
+        PHA
+        LDY #$00
+        LDX #$00
+    WriteCMLoop:
+        LDA (cmptr), y
+        STA COLLMAPBANK, x
+        INY
+        INX
+        CPY #$3C    ;60 bytes in COLLMAP0
+        BNE WriteCMLoop
+    ReturnFromLoadCollMap:
+        PLA
+        TAY
+        PLA
+        TAX
+        PLA
+        RTS
 
 ;------------------------------Load NextArea to 2007-----------------------------------------
 LoadNextArea:   ;TODO: setup palptr for LoadAttributes
@@ -4535,6 +4878,20 @@ EndClearEntitiesLoop:
     LDA #$FF
     STA ENTITIES, x
 
+;    LDX #$10        ;entry after player data
+;ClearMetatilesLoop:
+;    LDA METATILES, x
+;    CMP #$FF
+;    BEQ EndClearMetatilesLoop
+;    LDA #$00
+;    STA METATILES, x
+;    INX
+;    JMP ClearEntitiesLoop
+;EndClearMetatilesLoop:
+;    LDX #$0C
+;    LDA #$FF
+;    STA METATILES, x
+
     LDA #$1E
     STA $2001
     LDA $2000
@@ -4651,218 +5008,43 @@ NoLava:
 ; Even better, shift the metatile loading entirely out of vblank.
 ; At the end of the gameloop updates, write OAM data in order to a new RAM area
 ; Read sequentially from RAM so no calc done in vblank.
-DRAWENTITIES:               ;Load info into a Metatile struct then draw
+DrawMETATILES:               ;Draw metatiles from METATILES location
     LDX #$00
-BeginLoadEntityLoop: 
-    LDA ENTITIES, x      ;check if there are no sprites at all
-    CMP #$FF
-    BNE LoadEntityLoop
-    JMP DONESPRITE
-LoadEntityLoop:
-    LDA ENTITIES, x     ;type
-    CMP #$00            ;type nothing
-    BEQ AdvanceToNextEntity
-    JMP ContinueCurrentEntity
-AdvanceToNextEntity:
-    TXA
-    CLC
-    ADC #$0C
-    TAX
-    JMP BeginLoadEntityLoop
-ContinueCurrentEntity:
-    INX ;go past type
-    LDA ENTITIES, x     ;xpos
-    STA metatile+Metatile::xpos
-    INX
-    LDA ENTITIES, x     ;ypos
-    STA metatile+Metatile::ypos
-    INX
-    LDA ENTITIES, x
-    STA metatile+Metatile::state
-    INX
-    LDA ENTITIES, x     ;palette
-    STA metatile+Metatile::pal
-;What conditional for alternating frames?
-;Frame will be set before draw routine and sent in
-LoadSprite:
-    INX
-    LDA ENTITIES, x     ;tlspr
-    STA metatile+Metatile::spritetl
-    INX
-    LDA ENTITIES, x     ;trspr
-    STA metatile+Metatile::spritetr
-    INX
-    LDA ENTITIES, x     ;blspr
-    STA metatile+Metatile::spritebl
-    INX
-    LDA ENTITIES, x     ;brspr
-    STA metatile+Metatile::spritebr
-EndLoadSprite:
-    INX                 ;env
-    INX                 ;metax
-    INX                 ;metay
-    INX                 ;next entity::type OR stop byte
-CheckMetatileFacing:
-    LDA metatile+Metatile::state
-    AND #%11000000
-    CMP #%10000000
-    BNE DRAWMETATILEHRZMIRROR
-;-----------------------------------------------------------------------------
-DRAWMETATILE: ;in--struct of meta tile data
-    LDA metatile+Metatile::ypos ; y
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::spritetl ; tile
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::pal ; palette etc
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::xpos   ; x
-    STA (spritemem), y
-    INY
 
-    ;bottom left sprite
-    LDA metatile+Metatile::ypos ; y
-    CLC
-    ADC #$08   ;Add 8 pixels to y-pos for second sprite
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::spritebl ; tile
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::pal   ;palette
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::xpos ; x position
-    STA (spritemem), y
-    INY
-
-    ;top right sprite
-    LDA metatile+Metatile::ypos
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::spritetr     ;same as top left but we will flip it and add 8 to xpos
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::pal     ;palette %01000001   palette 1, flip horizontal
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::xpos
-    CLC
-    ADC #$08
-    STA (spritemem), y
-    INY
-
-    ;bottom right
-    LDA metatile+Metatile::ypos ; y
-    CLC
-    ADC #$08   ;Add 8 pixels to y-pos for second sprite
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::spritebr   
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::pal   ;palette with h-flip
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::xpos
-    CLC
-    ADC #$08
-    STA (spritemem), y
-    INY
-    JMP ClearMetatile
-
-;TODO: Replace this whole repetitive function with a simple rewrite of the palette variable
-DRAWMETATILEHRZMIRROR: ;in--struct of meta tile data
-;swap tiles and set horizontal flip
-    LDA metatile+Metatile::ypos ; y
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::spritetr ; tile
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::pal ; palette etc
-    ORA #$40
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::xpos   ; x
-    STA (spritemem), y
-    INY
-
-    ;bottom left sprite
-    LDA metatile+Metatile::ypos ; y
-    CLC
-    ADC #$08   ;Add 8 pixels to y-pos for second sprite
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::spritebr ; tile
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::pal   ;palette
-    ORA #$40
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::xpos ; x position
-    STA (spritemem), y
-    INY
-
-    ;top right sprite
-    LDA metatile+Metatile::ypos
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::spritetl     ;same as top left but we will flip it and add 8 to xpos
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::pal     ;palette %01000001   palette 1, flip horizontal
-    ORA #$40
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::xpos
-    CLC
-    ADC #$08
-    STA (spritemem), y
-    INY
-
-    ;bottom right
-    LDA metatile+Metatile::ypos ; y
-    CLC
-    ADC #$08   ;Add 8 pixels to y-pos for second sprite
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::spritebl   
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::pal   ;palette with h-flip
-    ORA #$40
-    STA (spritemem), y
-    INY
-    LDA metatile+Metatile::xpos
-    CLC
-    ADC #$08
-    STA (spritemem), y
-    INY
-    ;JMP DoneDrawingMetatile
-ClearMetatile:
-    LDA #$00
-    STA metatile+Metatile::xpos
-    STA metatile+Metatile::ypos
-DoneDrawingMetatile:
-
-
-    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-CHECKENDSPRITE:
-    LDA ENTITIES, x
+DrawMetatilesLoop:
+    LDA METATILES, x        ;y
     CMP #$FF
     BEQ DONESPRITE
-    JMP LoadEntityLoop
+    STA (spritemem), y
+    INX
+    INY
+    LDA METATILES, x        ;spr
+    STA (spritemem), y
+    INX
+    INY
+    LDA METATILES, x        ;pal
+    STA (spritemem), y
+    INX
+    INY
+    LDA METATILES, x        ;x
+    STA (spritemem), y
+    INX
+    INY
+    JMP DrawMetatilesLoop
+    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 DONESPRITE:
     LDA gamestate
     CMP #$01
-    BNE DoneDrawHearts
+    BNE CheckForLavaState
     LDA playerdata+Entity::health
     CMP #$00
     BEQ DoneDrawHearts
+    JMP DrawUI
+CheckForLavaState:
+    LDA gamestate
+    CMP #$08
+    BNE DoneDrawHearts
 DrawUI:
     LDX #$00
 BeginDrawUILoop:
@@ -5038,8 +5220,8 @@ CONTENTS0:
     .byte $8C   ;offset to block table
 ENTS0:
     .byte $84, $04       ;snake at (8, 4)
-    .byte $52, $00    ;DEBUG: the last piece @ (15,14)    
-    ;.byte $2D, $04
+    ;.byte $52, $00    ;DEBUG: the last piece @ (15,14)    
+    .byte $2D, $04
     .byte $FF           ;end of list
 COLLMAP0: ;will reduce to 60 bytes
     .byte %01011001, %01010101, %01111111, %11111101
