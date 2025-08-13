@@ -203,19 +203,6 @@ CLEARMEM:
     LDX #$00
     LDY #$00
 
-INITIALIZETITLESCREEN:
-    LDA #$00
-    STA timer
-    LDA #$FF
-    STA ENTITIES
-    LDA #<TITLESCREEN
-    ;LDA #<VICTORYSCREEN
-    STA ptr           ;utilize block table pointer for text load
-    LDA #>TITLESCREEN
-    ;LDA #>VICTORYSCREEN
-    STA ptr+1
-    JSR LoadTextFromROM  ;Load Title Screen text into TEXTBANK ($0580) [THIS WORKS]
-    
     LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
     LDA #$20
     STA $2006           ;PPUADDR      we are using $2000 for graphics memory
@@ -230,6 +217,36 @@ INITIALIZETITLESCREEN:
     LDA #$00
     STA $2006           ;PPUADDR
     JSR LoadBlankNametable
+
+
+INITIALIZETITLESCREEN:
+    LDA #$00
+    STA timer
+    LDA #$FF
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$20
+    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
+    LDA #$00
+    STA $2006           ;PPUADDR
+
+    JSR LoadBlankNametable 
+    
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$28
+    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
+    LDA #$00
+    STA $2006           ;PPUADDR
+    JSR LoadBlankNametable
+
+    STA ENTITIES
+    LDA #<TITLESCREEN
+    ;LDA #<VICTORYSCREEN
+    STA ptr           ;utilize block table pointer for text load
+    LDA #>TITLESCREEN
+    ;LDA #>VICTORYSCREEN
+    STA ptr+1
+    JSR LoadTextFromROM  ;Load Title Screen text into TEXTBANK ($0580) [THIS WORKS]
+    
     LDA #$23
     STA $2006           ;PPUADDR      nametable1 attribute layer
     LDA #$C0
@@ -333,12 +350,14 @@ CheckForGameState:       ;After player is written, see if game has entered "tran
     CMP #$08
     BEQ HandleLava
     CMP #$06            ;leave as last in list because it just calls a JSR
-    BNE DoneCheckForGameState
-    JSR LoadNextArea
-    JMP waitfordrawtocomplete
+    BEQ HandleLoadNextArea
+    JMP DoneCheckForGameState
 JumpToScreenTransition:
     JMP SCREENTRANLOOP   ;waitfordrawtocompleteST   ;do I need to do jump to a specific part of the loop?
 
+HandleLoadNextArea:
+    JSR LoadNextArea
+    JMP waitfordrawtocomplete
 HandleGameOver:
         LDA timer
         CMP #$00
@@ -346,9 +365,11 @@ HandleGameOver:
         JMP waitfordrawtocomplete
     InitGameOver:
         LDA #$00
-        STA lavacounter
-        STA lavatimer
-        STA lastpiece
+        LDX #$00
+    ClearZeroPage:
+        STA $00, x
+        INX
+        BNE ClearZeroPage
 
         LDA #<GAMEOVERSCREEN
         STA ptr           ;utilize block table pointer for text load
@@ -398,9 +419,17 @@ HandleLava:             ;anything else we needto do here? Once the top row anima
         JMP FinishHandleLava
     ResetLavaTimer:
         INC lavacounter
-        LDA #$80        ;time between lava flow advances
+        LDA #$40        ;time between lava flow advances
         STA lavatimer
     FinishHandleLava:
+        LDX #$20        ;32 byte loop
+        LDA #$00
+    ClearTileBufferA:
+        STA tilebufferA, x
+        DEX
+        CPX #$00
+        BNE ClearTileBufferA
+
         JSR AddLavaToTileBuffer
 DoneCheckForGameState:
 INITSPRITES:
@@ -1368,8 +1397,8 @@ SCREENTRANLOOP:
         LDA scrolly
         CMP #$FD
         BNE DoneTransitionUp
-        ;LDA #$80
-        ;STA playerdata+Entity::ypos
+        LDA #$EF
+        STA playerdata+Entity::ypos
     DoneTransitionUp:
         LDX #$00
         JMP CopyPDtoEBLoopST
@@ -1463,6 +1492,7 @@ SCREENTRANLOOP:
         LDA level+Area::btaddr2
         STA btptr+1
         JSR LoadNametable
+
         LDA #$23
         STA $2006           ;PPUADDR      nametable1 attribute layer
         LDA #$C0
@@ -1472,6 +1502,7 @@ SCREENTRANLOOP:
         LDA level+Area::paladdr2
         STA palptr+1
         JSR LoadAttributes  
+        
         LDA #$1E
         STA $2001
         LDA $2000
@@ -1483,8 +1514,14 @@ SCREENTRANLOOP:
         BNE LoadNormalGame
         LDA #$00
         STA lavacounter
-        LDA #$80
+        LDA #$40
         STA lavatimer
+        LDA #$23
+        STA lavaaddress
+        LDA #$BF
+        STA lavaaddress+1
+
+
         LDA #$08
         STA gamestate
         JMP FillEntities
@@ -3203,7 +3240,7 @@ CopyPDtoEBLoopC:
     LDA #$01
     STA checkvar    ;set checkvar to 1 so subroutine does not mess with stack
     JSR WriteEntityFromBuffer ;Subroutine to write all the changes made to player this frame
-
+    JSR WriteMetatilesToRAM
 ReturnFromVictoryCutscene:
     PLA
     TAY
@@ -3580,10 +3617,17 @@ Clear500Loop:
     CPX #$00
     BNE Clear500Loop
 Clear600Loop:
-    STA ENTITIES, x
+    STA METATILES, x
     INX
     CPX #$00
     BNE Clear600Loop
+    LDA #$FF
+    STA METATILES
+Clear700Loop:
+    STA ENTITIES, x
+    INX
+    CPX #$00
+    BNE Clear700Loop
     LDA #$FF
     STA ENTITIES
 Clear200Loop:
@@ -4179,8 +4223,7 @@ SetupNextArea:  ;gets pointer data from ROM (AREA0, AREA1, ...) and stores it in
 ;nametables in PPU memory and increment the correct scroll, h or v (First I'm only messing around with v). The idea is to get a Zelda-like
 ;screen transition.
 ;LoadNametable loads one name table (not both). Need to make a way to call for "level" then "nextarea" when transitioning screens
-
-LoadBlankNametable:
+LoadBlankNametable: ;clears the whole nametable including attributes to D0
         PHA
         TXA
         PHA
@@ -4556,6 +4599,8 @@ AddLavaToTileBuffer: ;adds one row of lava tiles to nametable for each value in 
         PHA
         
         LDA lavacounter
+        CMP #$00
+        BEQ ResetLavaAddress
         ASL
         ASL
         ASL
@@ -4566,7 +4611,14 @@ AddLavaToTileBuffer: ;adds one row of lava tiles to nametable for each value in 
         SEC
         SBC colltemp2
         STA lavaaddress+1   ;jump back however many rows lavacounter requires
-
+        JMP ContinueAddLavaToTileBuffer
+    ResetLavaAddress:
+        LDA #$23
+        STA lavaaddress
+        LDA #$BF
+        STA lavaaddress+1
+        JMP ReturnFromAddLavaToTileBuffer
+    ContinueAddLavaToTileBuffer:
     ;set $2007 to last entry in nametable. Write to both? Or would that mess up the transitions?
         ;LDA $2002
         LDA lavacounter
@@ -4752,6 +4804,22 @@ LoadNextArea:   ;TODO: setup palptr for LoadAttributes
     STA $2000
     LDA #$00
     STA $2001
+ClearNametables:
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$20
+    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
+    LDA #$00
+    STA $2006           ;PPUADDR
+    JSR LoadBlankNametable 
+    
+    LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
+    LDA #$28
+    STA $2006           ;PPUADDR      we are using $2000 for graphics memory
+    LDA #$00
+    STA $2006           ;PPUADDR
+    JSR LoadBlankNametable
+
+
     LDA exitdir
     CMP #$01
     BEQ FillNametablesUp
@@ -4976,9 +5044,11 @@ VBLANK:
     PHA
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-
     LDA gamestate
     CMP #$08        ;is lava flowing?
+    BNE NoLava
+    LDA lavatimer
+    CMP #$40
     BNE NoLava
     LDA $2002
     LDA lavaaddress
@@ -4986,20 +5056,19 @@ VBLANK:
     LDA lavaaddress+1
     STA $2006
     LDX #$00
-    ;LDY #$00
+
 AddLavaToNametable:
     LDA tilebufferA, x
     STA $2007
     INX
-    TXA
-    CMP #$20
+    CPX #$20
     BNE AddLavaToNametable
 
 NoLava:
 ;begin populating the OAM data in memory
-    LDX #$00        ;x will index mem locations of entity data (getter)
-    LDA #$00        ;low byte of graphics page $0200
+    LDX #$00
     LDY #$00        ;y will index the OAM memory location (putter)
+    LDA #$00        ;low byte of graphics page $0200
     STA spritemem
     LDA #$02        ;high byte of graphics page $0200
     STA spritemem+1
@@ -5009,8 +5078,7 @@ NoLava:
 ; At the end of the gameloop updates, write OAM data in order to a new RAM area
 ; Read sequentially from RAM so no calc done in vblank.
 DrawMETATILES:               ;Draw metatiles from METATILES location
-    LDX #$00
-
+    ;LDX #$00
 DrawMetatilesLoop:
     LDA METATILES, x        ;y
     CMP #$FF
@@ -5083,12 +5151,10 @@ DrawHeartsLoop:     ;y, spr, pal, x
 DoneDrawHearts:
 ;DMA copy sprites
     LDA #$00
-    STA $2003 ;reset counter
+    STA $2003   ;reset counter
     LDA #$02    ;set memory to 0x200 range
     STA $4014   ;OAMDMA byte - This action shoves everything we wrote to $0200 with the registerss into the PPU via OAMDMA
     NOP         ;pause for sync
-    NOP
-    NOP
     LDA #$00    ;clear register
     STA $2006
     STA $2006   ;$2006 takes a double write PPUDATA
