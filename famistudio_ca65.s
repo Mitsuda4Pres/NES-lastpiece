@@ -82,9 +82,9 @@
 ; like the example below.
 ;======================================================================================================================
 
-.define FAMISTUDIO_CA65_ZP_SEGMENT   ZP
-.define FAMISTUDIO_CA65_RAM_SEGMENT  RAM
-.define FAMISTUDIO_CA65_CODE_SEGMENT PRG
+.define FAMISTUDIO_CA65_ZP_SEGMENT   ZEROPAGE
+.define FAMISTUDIO_CA65_RAM_SEGMENT  BSS
+.define FAMISTUDIO_CA65_CODE_SEGMENT CODE
 
 ;======================================================================================================================
 ; 2) AUDIO EXPANSION CONFIGURATION
@@ -143,14 +143,14 @@
 FAMISTUDIO_CFG_NTSC_SUPPORT  = 1
 
 ; Support for sound effects playback + number of SFX that can play at once.
-; FAMISTUDIO_CFG_SFX_SUPPORT   = 1
-; FAMISTUDIO_CFG_SFX_STREAMS   = 2
+FAMISTUDIO_CFG_SFX_SUPPORT   = 1
+FAMISTUDIO_CFG_SFX_STREAMS   = 2
 
 ; Blaarg's smooth vibrato technique. Eliminates phase resets ("pops") on square channels. 
 ; FAMISTUDIO_CFG_SMOOTH_VIBRATO = 1
 
 ; Enables DPCM playback support.
-FAMISTUDIO_CFG_DPCM_SUPPORT   = 1
+;FAMISTUDIO_CFG_DPCM_SUPPORT   = 1
 
 ; Must be enabled if you are calling sound effects from a different thread than the sound engine update.
 ; FAMISTUDIO_CFG_THREAD         = 1

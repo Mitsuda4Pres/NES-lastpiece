@@ -4,7 +4,7 @@
 ;   8/7 - When climbing to top of vine, character "vibrates". Make it so he just chills until jumping off
 ;   8/7 - "Vibrates" when vertical in a one tile wide space
 ;   8/12 - Player missing half sprites on lava load
-
+.include "famistudio_ca65.s"
 .segment "HEADER"
 
     .byte "NES" 
@@ -218,6 +218,14 @@ CLEARMEM:
     STA $2006           ;PPUADDR
     JSR LoadBlankNametable
 
+INITIALIZEAUDIO:        ;see famistudio_ca65.s "Interface" section for API 
+; [in] a : Playback platform, zero for PAL, non-zero for NTSC.
+; [in] x : Pointer to music data (lo)
+; [in] y : Pointer to music data (hi)
+    LDA #$01            ;non zero for NTSC
+    LDX #<song_silver_surfer
+    LDY #>song_silver_surfer
+    JSR famistudio_init
 
 INITIALIZETITLESCREEN:
     LDA #$00
@@ -334,6 +342,7 @@ FINISHINIT:
 ;--------------------------------------------------------------------------------------
 
 GAMELOOP:
+    JSR famistudio_update
 UpdateTimer:
     LDA timer
     CMP #$00
@@ -561,6 +570,9 @@ checkstart:
     BEQ loadmaingame
     JMP checka  ;eventually put PAUSE function here
 loadmaingame:
+    LDA #$00
+    JSR famistudio_music_play
+
     LDA #$07
     STA gamestate   ;if on title screen, change state to main game.
     JMP waitfordrawtocomplete
@@ -1366,6 +1378,8 @@ GoToGAMELOOP:
 ;When switching screens, get out of game loop entirely and use SCREENTRANLOOP
 ;Both PPU nametables should be loaded up by using the TransitionScreen BG loading subroutine
 SCREENTRANLOOP:
+    JSR famistudio_update
+
     InitSpritesST:
         LDY #$00
         LDA #$FF
@@ -5747,6 +5761,12 @@ BGTILES1:                       ;background tiles for world 1 (extreior) (16 ava
     .byte $00, $00, $00, $00    ;0E
     .byte $00, $00, $00, $00    ;0F
     .byte $1D, $1D, $1D, $1D    ;10     canvas tile - sky
+
+song_silver_surfer:
+.include "song_silver_surfer_ca65.s"
+
+sfx_data:
+.include "sfx_ca65.s"
 
 .segment "VECTORS"
     .word VBLANK
