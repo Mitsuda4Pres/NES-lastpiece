@@ -226,6 +226,9 @@ INITIALIZEAUDIO:        ;see famistudio_ca65.s "Interface" section for API
     LDX #<title_screen
     LDY #>title_screen
     JSR famistudio_init
+    LDX #<sfx_data
+    LDY #>sfx_data
+    JSR famistudio_sfx_init
 
 INITIALIZETITLESCREEN:
     LDA #$00
@@ -344,7 +347,6 @@ FINISHINIT:
 ;--------------------------------------------------------------------------------------
 
 GAMELOOP:
-    JSR famistudio_update
 UpdateTimer:
     LDA timer
     CMP #$00
@@ -603,7 +605,6 @@ checka:
     STA playerdata+Entity::state
     LDA #JUMPFORCE
     STA playerdata+Entity::velocity
-
     INC buttonflag
     ;ORA #$01
     ;STA buttonflag
@@ -988,6 +989,9 @@ HandleSnakeHit:
     CMP #%10000000
     BEQ SnakeHitFacingRight
 SnakeHitFacingLeft:
+    LDA #$00
+    LDX #FAMISTUDIO_SFX_CH0
+    JSR famistudio_sfx_play
     INC playerdata+Entity::xpos
     INC playerdata+Entity::xpos
     INC playerdata+Entity::xpos
@@ -1007,6 +1011,10 @@ SnakeHitFacingLeft:
     STA timer
     JMP CheckOver
 SnakeHitFacingRight:
+    LDA #$00
+    LDX #FAMISTUDIO_SFX_CH0
+    JSR famistudio_sfx_play
+    LDA playerdata+Entity::health
     DEC playerdata+Entity::xpos
     DEC playerdata+Entity::xpos
     DEC playerdata+Entity::xpos
@@ -1016,7 +1024,6 @@ SnakeHitFacingRight:
     DEC playerdata+Entity::xpos
     DEC playerdata+Entity::xpos
     DEC playerdata+Entity::health
-    LDA playerdata+Entity::health
     CMP #$00
     BEQ Dead
     LDA playerdata+Entity::state
@@ -1122,6 +1129,9 @@ HandleDamagingUp:
     AND #%00001000
     CMP #%00001000 ;invincible?
     BEQ HandleSolidUp
+    LDA #$00
+    LDX #FAMISTUDIO_SFX_CH0
+    JSR famistudio_sfx_play
     DEC playerdata+Entity::health
     LDA playerdata+Entity::health
     CMP #$00
@@ -1336,9 +1346,11 @@ EndProcessEnemiesLoop:
 
     JSR WriteMetatilesToRAM
 waitfordrawtocomplete:
+    JSR famistudio_update
+waitfordrawloop:
     LDA drawcomplete
     CMP #$01
-    BNE waitfordrawtocomplete
+    BNE waitfordrawloop
     LDA #$00
     STA drawcomplete
     LDA gamestate ;-check if transitioning from title screen
