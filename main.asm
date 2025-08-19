@@ -10,7 +10,7 @@
     .byte "NES" 
     .byte $1a
     .byte $02       ; 4 - 2*16k PRG ROM (NROM 256)
-    .byte $01       ; 5 - 8k CHR ROM
+    .byte $01       ; 5 - 8k CHR ROM 
     .byte %00000000 ; 6 - mapper - horizontal mirroring
     .byte $00       ; 7
     .byte $00       ; 8 - 
@@ -223,8 +223,8 @@ INITIALIZEAUDIO:        ;see famistudio_ca65.s "Interface" section for API
 ; [in] x : Pointer to music data (lo)
 ; [in] y : Pointer to music data (hi)
     LDA #$01            ;non zero for NTSC
-    LDX #<song_silver_surfer
-    LDY #>song_silver_surfer
+    LDX #<title_screen
+    LDY #>title_screen
     JSR famistudio_init
 
 INITIALIZETITLESCREEN:
@@ -263,6 +263,8 @@ INITIALIZETITLESCREEN:
     STA bgpalette
     JSR LoadSingleAttributes
     JSR DrawText
+    LDA #$00
+    JSR famistudio_music_play
 
 ;Clear register and set palette address
 INITPALETTE:
@@ -570,8 +572,8 @@ checkstart:
     BEQ loadmaingame
     JMP checka  ;eventually put PAUSE function here
 loadmaingame:
-    LDA #$00
-    JSR famistudio_music_play
+    ;LDA #$00
+    JSR famistudio_music_stop
 
     LDA #$07
     STA gamestate   ;if on title screen, change state to main game.
@@ -5764,6 +5766,9 @@ BGTILES1:                       ;background tiles for world 1 (extreior) (16 ava
 
 song_silver_surfer:
 .include "song_silver_surfer_ca65.s"
+
+title_screen:
+.include "titlescreen.s"
 
 sfx_data:
 .include "sfx_ca65.s"
