@@ -1,9 +1,15 @@
 ;TODO: 8/7 - Fix climb down bug on screen 3 that pushes player left
-;   8/7 - Auto jump bug when landing on row 4?
-;   8/7 - Collision bug when trying to jump sideways through a one tile opening.
+;   *8/7 - Collision bug when trying to jump sideways through a one tile opening.
+;   FIXED (should be) *8/21 - Game over doesn't trigger when dying on second screen?
+;   *8/21 - Verify proper game over procedure, full reset of all memory
+;   *8/21 - Kill snakes on lava hit
+;   8/21 - Jump through wall bug (same as above? Check top collision or collision handling order)
+;   *8/21 - Graphical bugs when climbing back up after lava
 ;   8/7 - When climbing to top of vine, character "vibrates". Make it so he just chills until jumping off
 ;   8/7 - "Vibrates" when vertical in a one tile wide space
-;   8/12 - Player missing half sprites on lava load
+
+;*Fix before itch update
+
 .include "famistudio_ca65.s"
 .segment "HEADER"
 
@@ -649,10 +655,11 @@ CheckHealth:
     LDA playerdata+Entity::health
     CMP #$01
     BPL LoadState
-    LDA #$02        ;palette change
-    STA playerdata+Entity::pal
-    LDA #$00
-    STA playerdata+Entity::health
+    ;LDA #$02        ;palette change
+    ;STA playerdata+Entity::pal
+    ;LDA #$00
+    ;STA playerdata+Entity::health
+    JMP Dead
 LoadState:
 ;check win conditions
 CheckWinConditions:
@@ -5066,9 +5073,22 @@ DoneDrawingText:
 
 ;-------------------------------------------------------------------------------------------------;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    NMI / VBLANK    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;-------------------------------------------------------------------------------------------------;
+
+
+
+
+
+
+
 VBLANK:
     PHA ;push registers - A, P, X, Y
     PHP
