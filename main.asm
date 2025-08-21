@@ -603,6 +603,9 @@ checka:
     AND #%11101101      ;turn off walking and climbing
     ORA #%00000100      ;turn on jumping
     STA playerdata+Entity::state
+    LDA #$00
+    LDX #FAMISTUDIO_SFX_CH0
+    JSR famistudio_sfx_play
     LDA #JUMPFORCE
     STA playerdata+Entity::velocity
     INC buttonflag
@@ -989,7 +992,7 @@ HandleSnakeHit:
     CMP #%10000000
     BEQ SnakeHitFacingRight
 SnakeHitFacingLeft:
-    LDA #$00
+    LDA #$01
     LDX #FAMISTUDIO_SFX_CH0
     JSR famistudio_sfx_play
     INC playerdata+Entity::xpos
@@ -1011,7 +1014,7 @@ SnakeHitFacingLeft:
     STA timer
     JMP CheckOver
 SnakeHitFacingRight:
-    LDA #$00
+    LDA #$01
     LDX #FAMISTUDIO_SFX_CH0
     JSR famistudio_sfx_play
     LDA playerdata+Entity::health
@@ -1129,7 +1132,7 @@ HandleDamagingUp:
     AND #%00001000
     CMP #%00001000 ;invincible?
     BEQ HandleSolidUp
-    LDA #$00
+    LDA #$01
     LDX #FAMISTUDIO_SFX_CH0
     JSR famistudio_sfx_play
     DEC playerdata+Entity::health
@@ -3603,6 +3606,9 @@ InitializePlayer:
     STA spritemem
     LDA #$02
     STA spritemem+1
+InitializeMusic:
+    LDA #$01
+    JSR famistudio_music_play
 
     PLA
     TAY
@@ -5780,10 +5786,10 @@ song_silver_surfer:
 .include "song_silver_surfer_ca65.s"
 
 title_screen:
-.include "titlescreen.s"
+.include "lp_music.s"
 
 sfx_data:
-.include "sfx_ca65.s"
+.include "lp_sfx.s"
 
 .segment "VECTORS"
     .word VBLANK
