@@ -1,6 +1,5 @@
 ;TODO: 8/7 - Fix climb down bug on screen 3 that pushes player left
 ;   *8/7 - Collision bug when trying to jump sideways through a one tile opening.
-;   FIXED (should be) *8/21 - Game over doesn't trigger when dying on second screen?
 ;   *8/21 - Verify proper game over procedure, full reset of all memory
 ;   *8/21 - Kill snakes on lava hit
 ;   8/21 - Jump through wall bug (same as above? Check top collision or collision handling order)
@@ -9,6 +8,7 @@
 ;   8/7 - "Vibrates" when vertical in a one tile wide space
 
 ;*Fix before itch update
+;   FIXED (should be) *8/21 - Game over doesn't trigger when dying on second screen?
 
 .include "famistudio_ca65.s"
 .segment "HEADER"
@@ -184,7 +184,6 @@ RESET:
 
     JSR WAITFORVBLANK
 
-    ;TXA
     LDA #$00
     STA gamestate
 
@@ -214,7 +213,6 @@ CLEARMEM:
     STA $2006           ;PPUADDR      we are using $2000 for graphics memory
     LDA #$00
     STA $2006           ;PPUADDR
-
     JSR LoadBlankNametable 
     
     LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
@@ -580,7 +578,7 @@ checkstart:
     BEQ loadmaingame
     JMP checka  ;eventually put PAUSE function here
 loadmaingame:
-    ;LDA #$00
+    LDA #$00
     JSR famistudio_music_stop
 
     LDA #$07
