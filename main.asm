@@ -275,8 +275,8 @@ INITIALIZETITLESCREEN:
     STA bgpalette
     JSR LoadSingleAttributes
     JSR DrawText
-    LDA #$01
-    JSR famistudio_music_play
+    ;LDA #$04
+    ;JSR famistudio_music_play
 
 ;Clear register and set palette address
 INITPALETTE:
@@ -389,12 +389,12 @@ HandleGameOver:
         LDA #$00
         LDX #$00
     ClearZeroPage:
-        STA $01, x      ;don't clear gamestate, start at 01
+        STA $00, x      ;don't clear gamestate, start at 01
         INX
         CPX #$C0        ;180 bytes that I have used on ZP. Leave rest untouched for audio driver.
         BNE ClearZeroPage
-        LDA #$01
-        JSR famistudio_music_stop
+        LDA #$03
+        STA gamestate
         ;LDA #01
         ;LDX #<sfx_data
         ;LDY #>sfx_data
@@ -403,7 +403,8 @@ HandleGameOver:
         STA ptr           ;utilize block table pointer for text load
         LDA #>GAMEOVERSCREEN
         STA ptr+1
-
+        LDA #$04
+        JSR famistudio_music_play
         JSR InitializeAltScreen
         JMP waitfordrawtocomplete
 HandleCutscene:          ;make sure relevant variables, esp custceneid, for a scene are set at time the state is changed.
@@ -416,6 +417,7 @@ HandleCutscene:          ;make sure relevant variables, esp custceneid, for a sc
         BEQ RunCutscene2
         JMP DoneCheckForGameState   ;no branch bug state, given id doesn't have associated cutscene
     RunCutscene1:
+        ;play lava rumble sfx
         LDA timer
         CMP #$00
         BEQ ExitCutscene1
@@ -619,7 +621,7 @@ checkstart:
     BEQ loadmaingame
     JMP checka  ;eventually put PAUSE function here
 loadmaingame:
-    LDA #$00
+    LDA #$01
     JSR famistudio_music_stop
 
     LDA #$07
@@ -3670,7 +3672,7 @@ InitializePlayer:
     LDA #$02
     STA spritemem+1
 InitializeMusic:
-    LDA #$01
+    LDA #$02
     JSR famistudio_music_play
 
     PLA
@@ -5872,8 +5874,7 @@ song_silver_surfer:
 
 
 music_data:
-.include "lp_music2.s"
-;.include "lp_music.s"
+.include "lp_music.s"
 
 sfx_data:
 .include "lp_sfx.s"
