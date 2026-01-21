@@ -1,6 +1,9 @@
 ;TODO: 8/7 - Fix climb down bug on screen 3 that pushes player left
+;    *1/20/26 - Collisions moving left agains snake doesn't work
 ;   *8/7 - Collision bug when trying to jump sideways through a one tile opening.
 ;   *8/21 - Verify proper game over procedure, full reset of all memory
+;       ****Reset audio engine on death/restart****
+;   *1/20/26 - Fix sound on game over screen
 ;   *8/21 - Kill snakes on lava hit
 ;   8/21 - Jump through wall bug (same as above? Check top collision or collision handling order)
 ;   *8/21 - Graphical bugs when climbing back up after lava
@@ -135,6 +138,7 @@ colltemp1:          .res 1
 colltemp2:          .res 1
 colltemp3:          .res 1
 collreturnval:      .res 1
+sfxloopcount:       .res 1
 animaframes:        .res 1
 totalsprites:       .res 1
 playerdata:         .res .sizeof(Entity)            ;14b
@@ -161,7 +165,7 @@ palptr:             .res 2
 entptr:             .res 2
 exitdir:            .res 1      ;1 - up, 2 - down, 3 - left, 4 - right
 
-;total zero page reserved: 168b (max 254)
+;total zero page reserved: 180b (max 254)
 
 .segment "CODE"
 
@@ -187,7 +191,8 @@ RESET:
     LDA #$00
     STA gamestate
 
-    LDX #$00 ;before calling from wild
+    LDX #$00        ;before calling from wild
+RESETGAME:
 CLEARMEM:
     STA $0000, x    ;zeroing out the memory ranges. X is indexing through each block. when X incs to 1, address= $0001 etc
     STA $0100, x
@@ -227,8 +232,8 @@ INITIALIZEAUDIO:        ;see famistudio_ca65.s "Interface" section for API
 ; [in] x : Pointer to music data (lo)
 ; [in] y : Pointer to music data (hi)
     LDA #$01            ;non zero for NTSC
-    LDX #<title_screen
-    LDY #>title_screen
+    LDX #<music_data
+    LDY #>music_data
     JSR famistudio_init
     LDX #<sfx_data
     LDY #>sfx_data
@@ -270,7 +275,7 @@ INITIALIZETITLESCREEN:
     STA bgpalette
     JSR LoadSingleAttributes
     JSR DrawText
-    LDA #$00
+    LDA #$01
     JSR famistudio_music_play
 
 ;Clear register and set palette address
@@ -384,10 +389,16 @@ HandleGameOver:
         LDA #$00
         LDX #$00
     ClearZeroPage:
-        STA $00, x
+        STA $01, x      ;don't clear gamestate, start at 01
         INX
+        CPX #$C0        ;180 bytes that I have used on ZP. Leave rest untouched for audio driver.
         BNE ClearZeroPage
-
+        LDA #$01
+        JSR famistudio_music_stop
+        ;LDA #01
+        ;LDX #<sfx_data
+        ;LDY #>sfx_data
+        ;JSR famistudio_sfx_init
         LDA #<GAMEOVERSCREEN
         STA ptr           ;utilize block table pointer for text load
         LDA #>GAMEOVERSCREEN
@@ -505,7 +516,7 @@ readcontrollerbuttons:
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;TODO: More robust logic will go on button calls once collision detection is implemented
-
+    
 checkleft:
     LDA controller          ;I think 1 means not pressed and 0 means pressed (opposite normal)
     AND #$02                ;bit2 is left, AND will return true if left is 1 (not pressed) then jump to checkright
@@ -536,10 +547,26 @@ checkup:
     LDA playerdata+Entity::env
     CMP #$01    ;over a climbable
     BNE donecheckingdirectional
+    ;set state
     LDA playerdata+Entity::state
     ORA #%00010000      ;set to climbing
     AND #%11011000      ;turn of falling, jumping, standing and walking
     STA playerdata+Entity::state
+    ;play sfx if time
+    LDA sfxloopcount
+    CMP #$00
+    BNE upincrementsfxloopcount
+    LDA #$05            ;SFX #05 into A register (climb sound)
+    LDX #FAMISTUDIO_SFX_CH1
+    JSR famistudio_sfx_play
+upincrementsfxloopcount:
+    INC sfxloopcount
+    CMP #$10
+    BNE checkupdecrement
+    LDA #$00
+    STA sfxloopcount
+checkupdecrement:
+    ;decrement position
     DEC playerdata+Entity::ypos
     INC animaframes
 ;JumpToDone:
@@ -556,6 +583,20 @@ checkdown:
     ORA #%00010000      ;set to climbing
     AND #%11011111      ;turn of falling
     STA playerdata+Entity::state
+    ;play sfx if time
+    LDA sfxloopcount
+    CMP #$00
+    BNE downincrementsfxloopcount
+    LDA #$05            ;SFX #05 into A register (climb sound)
+    LDX #FAMISTUDIO_SFX_CH1
+    JSR famistudio_sfx_play
+downincrementsfxloopcount:
+    INC sfxloopcount
+    CMP #$10
+    BNE checkdownincrement
+    LDA #$00
+    STA sfxloopcount
+checkdownincrement:
     INC playerdata+Entity::ypos
     INC animaframes
 ;JumpToDone:
@@ -607,7 +648,7 @@ checka:
     AND #%11101101      ;turn off walking and climbing
     ORA #%00000100      ;turn on jumping
     STA playerdata+Entity::state
-    LDA #$00
+    LDA #$00            ;SFX #00 into A register (jump sound)
     LDX #FAMISTUDIO_SFX_CH0
     JSR famistudio_sfx_play
     LDA #JUMPFORCE
@@ -991,13 +1032,15 @@ HandleSnakeHit:
     LDA playerdata+Entity::state
     AND #%00001000
     CMP #%00001000
-    BEQ CheckOver
+    BEQ SnakeHitJumpToCheckOver
     LDA playerdata+Entity::state
     AND #%11000000
     CMP #%10000000
     BEQ SnakeHitFacingRight
+SnakeHitJumpToCheckOver:
+    JMP CheckOver
 SnakeHitFacingLeft:
-    LDA #$01
+    LDA #$01            ;SFX #01 into A register (damage sound)
     LDX #FAMISTUDIO_SFX_CH0
     JSR famistudio_sfx_play
     INC playerdata+Entity::xpos
@@ -1043,6 +1086,12 @@ SnakeHitFacingRight:
 Dead:
     LDA #$03
     STA gamestate
+    ;Play dead sfx here
+    LDA #$01
+    JSR famistudio_music_stop
+    LDA #$02
+    LDX #FAMISTUDIO_SFX_CH0
+    JSR famistudio_sfx_play
     LDA #$08
     STA playerdata+Entity::tlspr
     LDA #$09
@@ -1354,7 +1403,6 @@ EndProcessEnemiesLoop:
 
     JSR WriteMetatilesToRAM
 waitfordrawtocomplete:
-    JSR famistudio_update
 waitfordrawloop:
     LDA drawcomplete
     CMP #$01
@@ -1400,7 +1448,7 @@ GoToGAMELOOP:
 ;When switching screens, get out of game loop entirely and use SCREENTRANLOOP
 ;Both PPU nametables should be loaded up by using the TransitionScreen BG loading subroutine
 SCREENTRANLOOP:
-    JSR famistudio_update
+    ;JSR famistudio_update
 
     InitSpritesST:
         LDY #$00
@@ -3202,6 +3250,16 @@ FinishCutscene:
     STA gamestate
     LDA #$FF
     STA ENTITIES
+    LDA #$00
+    LDX #$00
+ClearZeroPageVC:
+    STA $01, x
+    INX
+    CPX #$C0        ;clear only what we're using, not audio driver segment
+    BNE ClearZeroPageVC
+    LDA #$01
+    JSR famistudio_music_stop
+
     LDA #<VICTORYSCREEN
     STA ptr           ;utilize block table pointer for text load
     LDA #>VICTORYSCREEN
@@ -3641,39 +3699,46 @@ InitializeAltScreen: ;define ptr/ptr+1 with address of text table before coming 
     STA $2000
     LDA #$00
     STA $2001
+    ;Clear SFX channels with empty sound???
+
     ;Clear game RAM
     ;0440-06FF
     LDA #$00
     LDX #$00
+Clear300Loop:
+    ;STA $0300, x
+    ;INX
+    ;CPX #$00
+    ;BNE Clear300Loop
 Clear440Loop:
-    STA AREABANK, x
-    INX
-    CPX #$00
-    BNE Clear440Loop
+    ;STA AREABANK, x
+    ;INX
+    ;CPX #$00
+    ;BNE Clear440Loop
 Clear500Loop:
-    STA COLLMAPBANK, x
-    INX
-    CPX #$00
-    BNE Clear500Loop
+    ;STA COLLMAPBANK, x
+    ;INX
+    ;CPX #$00
+    ;BNE Clear500Loop
 Clear600Loop:
-    STA METATILES, x
-    INX
-    CPX #$00
-    BNE Clear600Loop
-    LDA #$FF
-    STA METATILES
+    ;STA METATILES, x
+    ;INX
+    ;CPX #$00
+    ;BNE Clear600Loop
+    ;LDA #$FF
+    ;STA METATILES
 Clear700Loop:
-    STA ENTITIES, x
-    INX
-    CPX #$00
-    BNE Clear700Loop
-    LDA #$FF
-    STA ENTITIES
+    ;STA ENTITIES, x
+    ;INX
+    ;CPX #$00
+    ;BNE Clear700Loop
+    ;LDA #$FF
+    ;STA ENTITIES
 Clear200Loop:
-    STA $0200, x    ;Fills $0200 with $FF, not 0. 
-    INX
-    CPX #$00
-    BNE Clear200Loop
+    ;STA $0200, x    ;Fills $0200 with $FF, not 0. 
+    ;INX
+    ;CPX #$00
+    ;BNE Clear200Loop
 
     LDA #$00
     STA timer
@@ -5227,6 +5292,7 @@ SwapScreen:
     LDX $2002   ;clear the register before
     STA $2000
 
+    JSR famistudio_update
 donewithppu:
     LDA #$01
     STA $07FF
@@ -5803,8 +5869,11 @@ BGTILES1:                       ;background tiles for world 1 (extreior) (16 ava
 song_silver_surfer:
 .include "song_silver_surfer_ca65.s"
 
-title_screen:
-.include "lp_music.s"
+
+
+music_data:
+.include "lp_music2.s"
+;.include "lp_music.s"
 
 sfx_data:
 .include "lp_sfx.s"
