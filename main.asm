@@ -50,12 +50,13 @@ JOYPAD1         = $4016
 JOYPAD2         = $4017
 
 ;;;Custom registers/maps. Save $0300 for audio
-AREABANK        = $0400     ;64 bytes for 32 areas.
-UI              = $0480     ;64 bytes
-COLLMAPBANK     = $04C0     ;one page is 256 bytes. Is this enough or do I bleed into 0600? A colliion map will always be 60 bytes rn.
-TEXTBANK        = $0500     ;Don't need this much for the TEXTBANK so new RAM items can use back half of $0500
-METATILES       = $0600     ;16 bytes per tile (uncompressed for speed).
-ENTITIES        = $0700
+;See .segment BSS for RAM reservations
+;AREABANK        = $0400     ;64 bytes for 32 areas.
+;UI              = $0480     ;64 bytes
+;COLLMAPBANK     = $04C0     ;one page is 256 bytes. Is this enough or do I bleed into 0600? A colliion map will always be 60 bytes rn.
+;TEXTBANK        = $0500     ;Don't need this much for the TEXTBANK so new RAM items can use back half of $0500
+;METATILES       = $0600     ;16 bytes per tile (uncompressed for speed).
+;ENTITIES        = $0700
 
 
 ;If I do a 2 bit coll map, each tile can have 4 properties: "not there", "solid", "climbable", "damaging"
@@ -391,7 +392,7 @@ HandleGameOver:
     ClearZeroPage:
         STA $00, x      ;don't clear gamestate, start at 01
         INX
-        CPX #$C0        ;180 bytes that I have used on ZP. Leave rest untouched for audio driver.
+        CPX #$FF        ;180 bytes that I have used on ZP. Leave rest untouched for audio driver.
         BNE ClearZeroPage
         LDA #$03
         STA gamestate
@@ -3412,6 +3413,29 @@ ReturnFromWriteEntity:
 
 
 
+;;;-------------------Clear Text From RAM--------------------------------;;;
+ClearTextFromRAM:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    LDA #$00
+    LDX #$40
+ClearTextFromRAMLoop:
+    DEX
+    STA TEXTBANK, x
+    BNE ClearTextFromRAMLoop
+
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+
 ;;;--------------------Load Text From ROM--------------------------------;;;
 ;;;---Use to load prewritten text like title screen or any story text----;;;
 ;;;---Destination: TEXTBANK = $0580--------------------------------------;;;
@@ -3701,53 +3725,23 @@ InitializeAltScreen: ;define ptr/ptr+1 with address of text table before coming 
     STA $2000
     LDA #$00
     STA $2001
-    ;Clear SFX channels with empty sound???
+    
 
     ;Clear game RAM
-    ;0440-06FF
     LDA #$00
     LDX #$00
-Clear300Loop:
-    ;STA $0300, x
-    ;INX
-    ;CPX #$00
-    ;BNE Clear300Loop
-Clear440Loop:
-    ;STA AREABANK, x
-    ;INX
-    ;CPX #$00
-    ;BNE Clear440Loop
-Clear500Loop:
-    ;STA COLLMAPBANK, x
-    ;INX
-    ;CPX #$00
-    ;BNE Clear500Loop
-Clear600Loop:
-    ;STA METATILES, x
-    ;INX
-    ;CPX #$00
-    ;BNE Clear600Loop
-    ;LDA #$FF
-    ;STA METATILES
-Clear700Loop:
-    ;STA ENTITIES, x
-    ;INX
-    ;CPX #$00
-    ;BNE Clear700Loop
-    ;LDA #$FF
-    ;STA ENTITIES
-Clear200Loop:
-    ;STA $0200, x    ;Fills $0200 with $FF, not 0. 
-    ;INX
-    ;CPX #$00
-    ;BNE Clear200Loop
+
+    ;JSR ClearAreaBankFromRAM
+    ;JSR ClearCollMapBankFromRAM
+    ;JSR ClearUIFromRAM
+    ;JSR ClearEntitiesFromRAM
+    JSR ClearMetatilesFromRAM
 
     LDA #$00
     STA timer
-    ;LDA #<GAMEOVERSCREEN
-    ;STA ptr           ;utilize block table pointer for text load
-    ;LDA #>GAMEOVERSCREEN
-    ;STA ptr+1
+    
+    ;ptr/ptr+1 should be preloaded with Text Bank before calling this subroutine
+    JSR ClearTextFromRAM
     JSR LoadTextFromROM  ;Load Title Screen text into TEXTBANK ($0580) [THIS WORKS]
     
     LDA $2002           ;PPUSTATUS    Is he reading to clear vblank flag? Neads to be changed to use NMI instead
@@ -3793,6 +3787,27 @@ Clear200Loop:
     PLA
     TAX
     PLA    
+    RTS
+
+ClearUIFromRAM:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    LDA #$00
+    LDX #$40
+ClearUIFromRAMLoop:
+    DEX
+    STA UI, x
+    BNE ClearUIFromRAMLoop
+
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
     RTS
 
 ;add hearts to UI later?
@@ -3855,6 +3870,31 @@ EndLoadUI:
     TAX
     PLA    
     RTS
+
+
+
+ClearEntitiesFromRAM:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    LDA #$00
+    LDX #$80
+ClearEntitiesFromRAMLoop:
+    DEX
+    STA ENTITIES, x
+    BNE ClearEntitiesFromRAMLoop
+
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+
 
 
 ;Call as part of LoadNextArea
@@ -4020,6 +4060,33 @@ EndLoadEntitiesFromROM:
 
 
 
+;-------------------------Clear Metatiles From RAM-----------------;
+ClearMetatilesFromRAM:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    LDA #$00
+    LDX #$80
+ClearMetatilesFromRAMLoop:
+    DEX
+    STA METATILES, x
+    BNE ClearMetatilesFromRAMLoop
+
+    LDA #$FF
+    STA METATILES
+
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+
+;--------------------Write Metatiles to RAM-----------------;
 WriteMetatilesToRAM:
         PHA
         TXA
@@ -4238,6 +4305,32 @@ WriteMetatilesToRAM:
         TAX
         PLA
         RTS
+
+
+;----------------Clear Area Bank From RAM------------------------------;
+ClearAreaBankFromRAM:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    LDA #$00
+    LDX #$40
+ClearAreaBankFromRAMLoop:
+    DEX
+    STA AREABANK, x
+    BNE ClearAreaBankFromRAMLoop
+
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+
+
 
 
 ;----------------------------------------------------------------
@@ -4871,6 +4964,27 @@ LoadAttributes:
         PLA
         RTS
 
+;----------------------Clear Collision Map From RAM-----------------------------;
+ClearCollMapBankFromRAM:
+    PHA
+    TXA
+    PHA
+    TYA
+    PHA
+
+    LDA #$00
+    LDX #$40
+ClearCollMapBankFromRAMLoop:
+    DEX
+    STA COLLMAPBANK, x
+    BNE ClearCollMapBankFromRAMLoop
+
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
 
 
 ;--*--*--*--*--*--*--*Load Collision Map subroutine*--*--*--*--*--*--*--*--*--*
@@ -5197,7 +5311,7 @@ NoLava:
 ; At the end of the gameloop updates, write OAM data in order to a new RAM area
 ; Read sequentially from RAM so no calc done in vblank.
 DrawMETATILES:               ;Draw metatiles from METATILES location
-    ;LDX #$00
+    LDX #$00
 DrawMetatilesLoop:
     LDA METATILES, x        ;y
     CMP #$FF
@@ -5886,3 +6000,11 @@ sfx_data:
 
 .segment "CHARS"
     .incbin "sprites.chr"
+
+.segment "BSS"
+    AREABANK:       .res 64
+    UI:             .res 64
+    TEXTBANK:       .res 64
+    METATILES:      .res 128
+    COLLMAPBANK:    .res 64
+    ENTITIES:       .res 128
