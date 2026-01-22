@@ -1,17 +1,18 @@
-;TODO: 8/7 - Fix climb down bug on screen 3 that pushes player left
-;    *1/20/26 - Collisions moving left agains snake doesn't work
-;   *8/7 - Collision bug when trying to jump sideways through a one tile opening.
-;   *8/21 - Verify proper game over procedure, full reset of all memory
-;       ****Reset audio engine on death/restart****
-;   *1/20/26 - Fix sound on game over screen
-;   *8/21 - Kill snakes on lava hit
-;   8/21 - Jump through wall bug (same as above? Check top collision or collision handling order)
-;   *8/21 - Graphical bugs when climbing back up after lava
-;   8/7 - When climbing to top of vine, character "vibrates". Make it so he just chills until jumping off
-;   8/7 - "Vibrates" when vertical in a one tile wide space
+;TODO:
 
-;*Fix before itch update
-;   FIXED (should be) *8/21 - Game over doesn't trigger when dying on second screen?
+;1/22/26 Order of attack:
+    ;Add lava sfx on piece acquisition and final cutscene
+    ;Lock in music
+    ;Handle side jumping collision bug (jumping sideways through a one tile opening. Maybe avoid that case altogether. Does he still jump through solid walls?)
+    ;Consider fixing 1-tile width "vibrate" issue
+
+
+;DONE LIST:
+    ;DONE!! - 1/22/26 Fix left approaching collision bug
+    ;Get all math out of NMI, only spritemem copy to OAMDMA
+    ;This should fix my screen shake, if not, fix screen shake
+    ;This should handle graphical bugs when lava is on screen
+
 
 .include "famistudio_ca65.s"
 .segment "HEADER"
@@ -146,6 +147,8 @@ playerdata:         .res .sizeof(Entity)            ;14b
 lastpiece:          .res 1
 entcollisionret:    .res 3                          ;array to return the "ids" of collided entities
 playeroverbox:      .res 1
+paletteshakeactive: .res 1
+lavaactive:         .res 1
 lavacounter:        .res 1
 lavatimer:          .res 1
 lavaaddress:        .res 2
@@ -371,12 +374,14 @@ CheckForGameState:       ;After player is written, see if game has entered "tran
     CMP #$05
     BEQ JumpToScreenTransition
     CMP #$08
-    BEQ HandleLava
+    BEQ JumpToHandleLava
     CMP #$06            ;leave as last in list because it just calls a JSR
     BEQ HandleLoadNextArea
     JMP DoneCheckForGameState
 JumpToScreenTransition:
     JMP SCREENTRANLOOP   ;waitfordrawtocompleteST   ;do I need to do jump to a specific part of the loop?
+JumpToHandleLava:
+    JMP HandleLava
 
 HandleLoadNextArea:
     JSR LoadNextArea
@@ -396,15 +401,11 @@ HandleGameOver:
         BNE ClearZeroPage
         LDA #$03
         STA gamestate
-        ;LDA #01
-        ;LDX #<sfx_data
-        ;LDY #>sfx_data
-        ;JSR famistudio_sfx_init
         LDA #<GAMEOVERSCREEN
         STA ptr           ;utilize block table pointer for text load
         LDA #>GAMEOVERSCREEN
         STA ptr+1
-        LDA #$04
+        LDA #$00
         JSR famistudio_music_play
         JSR InitializeAltScreen
         JMP waitfordrawtocomplete
@@ -418,23 +419,28 @@ HandleCutscene:          ;make sure relevant variables, esp custceneid, for a sc
         BEQ RunCutscene2
         JMP DoneCheckForGameState   ;no branch bug state, given id doesn't have associated cutscene
     RunCutscene1:
-        ;play lava rumble sfx
         LDA timer
         CMP #$00
         BEQ ExitCutscene1
         JSR PaletteShake
         JMP waitfordrawtocomplete
     ExitCutscene1:
+        LDA #$01
+        STA lavaactive  
         LDA #$08        ;enter lava state
         STA gamestate
         LDA #$00        ;restore original palette
-        STA bgpalette    
+        STA bgpalette
+        LDA #$01
+        JSR famistudio_music_play
+        ;TODO this write should happen in NMI
         LDA $2002
         LDA #$23
         STA $2006           ;PPUADDR      nametable1 attribute layer
         LDA #$C0
         STA $2006           ;PPUADDR
-        JSR LoadSingleAttributes
+        LDA #$01
+        STA paletteshakeactive  ;one last palette change to make sure we get back to the correct palette
         LDA #$00
         STA cutsceneid
         JMP waitfordrawtocomplete
@@ -991,8 +997,14 @@ HandleGetTreasure: ;How to handle multiple treasures on one stage? Not needed fo
     STA cutsceneid
     LDA #$04
     STA gamestate
-    
-    LDX #$0C    ;end of player
+        ;play lava rumble sfx
+    LDA #$02
+    JSR famistudio_music_stop
+    LDA #$04            ;SFX #05 into A register (climb sound)
+    LDX #FAMISTUDIO_SFX_CH0
+    JSR famistudio_sfx_play
+
+    LDX #$0C    ;end of player struct
     FindTreasureEntity:
         LDA ENTITIES, x
         CMP #EntityType::Treasure
@@ -1033,15 +1045,14 @@ HandleGetTreasure: ;How to handle multiple treasures on one stage? Not needed fo
 
 HandleSnakeHit:
     LDA playerdata+Entity::state
-    AND #%00001000
+    AND #%00001000          ;check for invincible state
     CMP #%00001000
     BEQ SnakeHitJumpToCheckOver
     LDA playerdata+Entity::state
     AND #%11000000
     CMP #%10000000
     BEQ SnakeHitFacingRight
-SnakeHitJumpToCheckOver:
-    JMP CheckOver
+
 SnakeHitFacingLeft:
     LDA #$01            ;SFX #01 into A register (damage sound)
     LDX #FAMISTUDIO_SFX_CH0
@@ -1063,6 +1074,7 @@ SnakeHitFacingLeft:
     STA playerdata+Entity::state
     LDA #$8F
     STA timer
+SnakeHitJumpToCheckOver:
     JMP CheckOver
 SnakeHitFacingRight:
     LDA #$01
@@ -1406,6 +1418,7 @@ EndProcessEnemiesLoop:
 
     JSR WriteMetatilesToRAM
 waitfordrawtocomplete:
+    JSR WriteScreenStateToVRAMBuffer
 waitfordrawloop:
     LDA drawcomplete
     CMP #$01
@@ -1599,6 +1612,11 @@ SCREENTRANLOOP:
         LDA lastpiece
         CMP #$01
         BNE LoadNormalGame
+        LDA lavaactive
+        CMP #$01
+        BEQ LoadNormalGame  ;don't go into lava state if lava already active
+
+        ;restart lava from bottom on next screen if lava is active
         LDA #$00
         STA lavacounter
         LDA #$40
@@ -1607,7 +1625,6 @@ SCREENTRANLOOP:
         STA lavaaddress
         LDA #$BF
         STA lavaaddress+1
-
 
         LDA #$08
         STA gamestate
@@ -1635,9 +1652,11 @@ SCREENTRANLOOP:
 
         JMP waitfordrawtocomplete   ;back to main GAMELOOP
     waitfordrawtocompleteST:
+        JSR WriteScreenStateToVRAMBuffer
+    waitfordrawtocompleteSTloop:
         LDA drawcomplete
         CMP #$01
-        BNE waitfordrawtocompleteST
+        BNE waitfordrawtocompleteSTloop
         LDA #$00
         STA drawcomplete
 
@@ -2493,7 +2512,7 @@ PlayerCollisionDetection:
         CheckAgainstEntitiesLoop:
             TXA
             CLC
-            ADC #$0C
+            ADC #$0C        ;size of each entity block
             TAX
             LDA ENTITIES, x
             CMP #$FF        ;$FF is end of list
@@ -2512,15 +2531,15 @@ PlayerCollisionDetection:
             DEX                 ;otherwise, move to next entity
             JMP CheckAgainstEntitiesLoop
         SecondXCheck:
-            LDA ENTITIES, x
+            LDA ENTITIES, x 
             CLC
             ADC #$0E
             STA colltemp1       ;get right side position of entity
             LDA playerdata+Entity::xpos
             CLC
-            ADC #$03            ;hurtbox 3px in
+            ADC #$02            ;hurtbox 3px in
             CMP colltemp1
-            BMI FirstYCheck
+            BMI FirstYCheck     ;if minus, it's overlapping on the left side
             DEX
             JMP CheckAgainstEntitiesLoop
         FirstYCheck:
@@ -3094,12 +3113,17 @@ PSPal4:
     LDA #$FF
     STA bgpalette
 FinishPaletteShake:
-    LDA $2002
-    LDA #$23
-    STA $2006           ;PPUADDR      nametable1 attribute layer
-    LDA #$C0
-    STA $2006           ;PPUADDR
-    JSR LoadSingleAttributes
+    ;have to turn off PPU first
+    ;Setup in NMI instead with a toggle for when to write
+    LDA #$01
+    STA paletteshakeactive
+
+    ;LDA $2002
+    ;LDA #$23
+    ;STA $2006           ;PPUADDR      nametable1 attribute layer
+    ;LDA #$C0
+    ;STA $2006           ;PPUADDR
+    ;JSR LoadSingleAttributes
 ReturnFromPaletteShake:
     PLA
     TAY
@@ -3218,22 +3242,26 @@ VCPal4:
     LDA #$FF
     STA bgpalette
 FinishVState3:
-    LDA $2002
-    LDA #$23
-    STA $2006           ;PPUADDR      nametable1 attribute layer
-    LDA #$C0
-    STA $2006           ;PPUADDR
-    JSR LoadSingleAttributes
+    LDA #$01
+    STA paletteshakeactive
+    ;LDA $2002
+    ;LDA #$23
+    ;STA $2006           ;PPUADDR      nametable1 attribute layer
+    ;LDA #$C0
+    ;STA $2006           ;PPUADDR
+    ;JSR LoadSingleAttributes
     JMP CopyPDtoEBLoopC
 AdvanceToVState4:
     LDA #$00
     STA bgpalette
-    LDA $2002
-    LDA #$23
-    STA $2006           ;PPUADDR      nametable1 attribute layer
-    LDA #$C0
-    STA $2006           ;PPUADDR
-    JSR LoadSingleAttributes
+    LDA #$01
+    STA paletteshakeactive
+    ;LDA $2002
+    ;LDA #$23
+    ;STA $2006           ;PPUADDR      nametable1 attribute layer
+    ;LDA #$C0
+    ;STA $2006           ;PPUADDR
+    ;JSR LoadSingleAttributes
     LDA #$04
     STA colltemp1
     LDA playerdata+Entity::state
@@ -3251,18 +3279,13 @@ VState4:
 FinishCutscene:
     LDA #$00
     STA gamestate
-    LDA #$FF
-    STA ENTITIES
-    LDA #$00
     LDX #$00
 ClearZeroPageVC:
-    STA $01, x
+    STA $00, x
     INX
-    CPX #$C0        ;clear only what we're using, not audio driver segment
     BNE ClearZeroPageVC
     LDA #$01
     JSR famistudio_music_stop
-
     LDA #<VICTORYSCREEN
     STA ptr           ;utilize block table pointer for text load
     LDA #>VICTORYSCREEN
@@ -3731,11 +3754,16 @@ InitializeAltScreen: ;define ptr/ptr+1 with address of text table before coming 
     LDA #$00
     LDX #$00
 
+    ;Clear as little as possible from RAM, potential of running into NMI
+    ;Looks like just metatiles to make sure no other sprites appear on screen
+
     ;JSR ClearAreaBankFromRAM
     ;JSR ClearCollMapBankFromRAM
     ;JSR ClearUIFromRAM
     ;JSR ClearEntitiesFromRAM
-    JSR ClearMetatilesFromRAM
+    ;JSR ClearMetatilesFromRAM
+    LDA #$FF
+    STA METATILES   ;Don't clear, just set first metatile to FF so no read occurs
 
     LDA #$00
     STA timer
@@ -4974,10 +5002,10 @@ ClearCollMapBankFromRAM:
 
     LDA #$00
     LDX #$40
-ClearCollMapBankFromRAMLoop:
-    DEX
-    STA COLLMAPBANK, x
-    BNE ClearCollMapBankFromRAMLoop
+    ClearCollMapBankFromRAMLoop:
+        DEX
+        STA COLLMAPBANK, x
+        BNE ClearCollMapBankFromRAMLoop
 
     PLA
     TAY
@@ -5237,67 +5265,16 @@ DoneDrawingText:
     RTS
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-;-------------------------------------------------------------------------------------------------;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    NMI / VBLANK    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;-------------------------------------------------------------------------------------------------;
-
-
-
-
-
-
-
-VBLANK:
-    PHA ;push registers - A, P, X, Y
-    PHP
+;Can I do everything I was doing inside of NMI in a single routine here before NMI?
+WriteScreenStateToVRAMBuffer:
+    PHA
     TXA
     PHA
     TYA
     PHA
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-    LDA gamestate
-    CMP #$08        ;is lava flowing?
-    BNE NoLava
-    LDA lavatimer
-    CMP #$40
-    BNE NoLava
-    LDA $2002
-    LDA lavaaddress
-    STA $2006
-    LDA lavaaddress+1
-    STA $2006
-    LDX #$00
 
-AddLavaToNametable:
-    LDA tilebufferA, x
-    STA $2007
-    INX
-    CPX #$20
-    BNE AddLavaToNametable
-
-NoLava:
 ;begin populating the OAM data in memory
     LDX #$00
     LDY #$00        ;y will index the OAM memory location (putter)
@@ -5310,6 +5287,8 @@ NoLava:
 ; Even better, shift the metatile loading entirely out of vblank.
 ; At the end of the gameloop updates, write OAM data in order to a new RAM area
 ; Read sequentially from RAM so no calc done in vblank.
+
+
 DrawMETATILES:               ;Draw metatiles from METATILES location
     LDX #$00
 DrawMetatilesLoop:
@@ -5382,6 +5361,91 @@ DrawHeartsLoop:     ;y, spr, pal, x
     CMP playerdata+Entity::health
     BMI DrawHeartsLoop  ;less than or equal to health, keep drawing
 DoneDrawHearts:
+    PLA
+    TAY
+    PLA
+    TAX
+    PLA
+    RTS
+
+
+
+
+
+
+
+;-------------------------------------------------------------------------------------------------;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;    NMI / VBLANK    ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;-------------------------------------------------------------------------------------------------;
+
+
+
+
+
+
+
+VBLANK:
+    PHA ;push registers - A, P, X, Y
+    PHP
+    TXA
+    PHA
+    TYA
+    PHA
+
+CheckPaletteShakeActive:
+    LDA paletteshakeactive
+    CMP #$01
+    BNE CheckLavaState
+    
+    LDA $2002
+    LDA #$23
+    STA $2006           ;PPUADDR      nametable1 attribute layer
+    LDA #$C0
+    STA $2006           ;PPUADDR
+
+    LDX #$40        ;loop counter 64b
+    LDY #$00
+    ;LDA #$00        ;Attribute value
+    LDA bgpalette   ;single palette chooser
+PaletteShakeLoop:
+    STA $2007
+    DEX
+    BNE PaletteShakeLoop
+    LDA #$00
+    STA paletteshakeactive
+
+CheckLavaState:
+;Do lava write inside NMI since it needs to redraw nametable
+    LDA gamestate
+    CMP #$08        ;is lava flowing?
+    BNE NoLava
+    LDA lavatimer
+    CMP #$40
+    BNE NoLava
+    LDA $2002
+    LDA lavaaddress
+    STA $2006
+    LDA lavaaddress+1
+    STA $2006
+    LDX #$00
+
+;This must move out of NMI
+AddLavaToNametable:
+    LDA tilebufferA, x      ;if gamestate == $08, tilebufferA should be filled with lava tiles?
+    STA $2007
+    INX
+    CPX #$20
+    BNE AddLavaToNametable
+
+NoLava:
 ;DMA copy sprites
     LDA #$00
     STA $2003   ;reset counter
@@ -5519,7 +5583,7 @@ CONTENTS0:
     .byte $4C     ;offset to palette map
     .byte $8C   ;offset to block table
 ENTS0:
-    .byte $84, $04       ;snake at (8, 4)
+    .byte $84, $00       ;snake at (8, 4)
     ;.byte $52, $00    ;DEBUG: the last piece @ (15,14)    
     .byte $2D, $04
     .byte $FF           ;end of list
@@ -6004,7 +6068,7 @@ sfx_data:
 .segment "BSS"
     AREABANK:       .res 64
     UI:             .res 64
-    TEXTBANK:       .res 64
+    TEXTBANK:       .res 128
     METATILES:      .res 128
     COLLMAPBANK:    .res 64
     ENTITIES:       .res 128
