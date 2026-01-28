@@ -1,15 +1,17 @@
 ;TODO:
-
+;Recommit main
 ;1/22/26 Order of attack:
-    ;Bug: can jump "into" left wall on screen two near top and screen four at bottom.
-        ;is it happening while falling?
+    ;Fix CollisionUp bug that moves player over by 1px
     ;Lock in music
-    ;Handle side jumping collision bug (jumping sideways through a one tile opening. Maybe avoid that case altogether. Does he still jump through solid walls?)
-    ;Consider fixing 1-tile width "vibrate" issue
+    
+    
 
 
 ;DONE LIST:
+    ;DONE!!! - 1/27/26 Handle side jumping collision bug (jumping sideways through a one tile opening. Maybe avoid that case altogether. Does he still jump through solid walls?)
+    ;DONE - ;Consider fixing 1-tile width "vibrate" issue, fixed by above fix
     ;DONE!! - 1/22/26 Fix left approaching collision bug
+    ;DONE - ;Add lava sfx on piece acquisition and final cutscene
     ;Get all math out of NMI, only spritemem copy to OAMDMA
     ;This should fix my screen shake, if not, fix screen shake
     ;This should handle graphical bugs when lava is on screen
@@ -92,6 +94,7 @@ JOYPAD2         = $4017
     env         .byte   ;$00 - nothing, $01 - climbable, $02 - damage, $03 - other entity  %tltrblbr 00-00-00-00
     metax       .byte
     metay       .byte
+    movedir     .byte   ;one bit - 0 = left, 1 = right. two bit - 0 = down, 1 = up. set l/r at controller press. set u at controller press, switch to down on fall
     ;any variables below this comment are not stored in ENTITIES RAM
     ;use for player variables since playerdata is maintained in zeropage
     velocity    .byte
@@ -142,6 +145,7 @@ colltemp1:          .res 1
 colltemp2:          .res 1
 colltemp3:          .res 1
 collreturnval:      .res 1
+framestartxpos:     .res 1
 sfxloopcount:       .res 1
 animaframes:        .res 1
 totalsprites:       .res 1
@@ -536,6 +540,9 @@ checkleft:
     AND #%00111100                     ;TODO: OPTIMIZE - save cycles by jumping
     ORA #%01000010          ;walking, facing left
     STA playerdata+Entity::state
+    LDA playerdata+Entity::movedir
+    AND #%11111110         ;turn on move left (leave up/down alone)
+    STA playerdata+Entity::movedir
     DEC playerdata+Entity::xpos   ;decrement x position
     INC animaframes
     JMP checkup ; don't allow for left and right at the same time (jump past checkright if left was pressed)
@@ -548,6 +555,9 @@ checkright:
     AND #%00111100
     ORA #%10000010          ;walking facing right
     STA playerdata+Entity::state
+    LDA playerdata+Entity::movedir
+    ORA #%00000001          ;turn on moving right
+    STA playerdata+Entity::movedir
     INC playerdata+Entity::xpos
     INC animaframes
 
@@ -687,20 +697,9 @@ finishcontrols: ;if on title screen, skip game logic
     JMP waitfordrawtocomplete
 
 processplayer:
-FindMetaPosition:
+SetStartingXpos:
     LDA playerdata+Entity::xpos
-    LSR
-    LSR
-    LSR
-    LSR
-    STA playerdata+Entity::metax
-    LDA playerdata+Entity::ypos
-FinishSetMetaY:
-    LSR
-    LSR
-    LSR
-    LSR
-    STA playerdata+Entity::metay
+    STA framestartxpos
 CheckHealth:
     LDA playerdata+Entity::health
     CMP #$01
@@ -1127,6 +1126,10 @@ CheckOver:
 
     JSR CheckPlayerCollisionOver
 ProcessLeft:
+    LDA playerdata+Entity::movedir
+    AND #%00000001      ;mask out all but l/r bit
+    CMP #$00
+    BNE ProcessRight     ;kaeru, HandleClimbableLeft?
     JSR CheckPlayerCollisionLeft
     LDA collreturnval
     AND #%00001100
@@ -1147,6 +1150,10 @@ HandleSolidLeft:
     ;STA playerdata+Entity::state
     INC playerdata+Entity::xpos
 ProcessRight:
+    LDA playerdata+Entity::movedir
+    AND #%00000001      ;mask out all but l/r bit
+    CMP #$01
+    BNE ProcessUp       ;kaeru, maybe I need to branch to HandleClimbableRight?
     JSR CheckPlayerCollisionRight  
     LDA collreturnval
     AND #%00000011
@@ -1162,10 +1169,6 @@ HandleClimbableRight:
 
     JMP ProcessUp
 HandleSolidRight:
-    ;LDA playerdata+Entity::state
-    ;AND #%11111101  ;turn of walk
-    ;ORA #%00000001  ;turn on stand
-    ;STA playerdata+Entity::state
     DEC playerdata+Entity::xpos
 
 ProcessUp:
@@ -1197,6 +1200,9 @@ HandleSolidUp:
     CLC
     ADC #$10
     STA playerdata+Entity::ypos
+    ;Set xpos back to starting xpos of frame bc HandleSolidLeft or Right has pushed it
+    LDA framestartxpos
+    STA playerdata+Entity::xpos
     JMP EndProcessPlayer
 HandleDamagingUp:
     LDA playerdata+Entity::state
@@ -1272,6 +1278,21 @@ HandleNothingDown:
     ORA #%00100000      ;turn on falling
     STA playerdata+Entity::state
 EndProcessPlayer:
+FindMetaPosition: ;problem - xpos hasn't been "reset" based on collision, so metax increases while button is held down
+    LDA playerdata+Entity::xpos
+    LSR
+    LSR
+    LSR
+    LSR
+    STA playerdata+Entity::metax
+    LDA playerdata+Entity::ypos
+FinishSetMetaY:
+    LSR
+    LSR
+    LSR
+    LSR
+    STA playerdata+Entity::metay
+
     ;update ENTITIES array with current player data
     ;first add playerdata to entitiesbuffer. this is inefficient in cycles, but to have a duplicate subroutine is inefficient in memory.
     ;TODO: find solution to above issue
@@ -2047,12 +2068,12 @@ PlayerCollisionDetection:
 
     ;----------------------------------------------------------------------------------------------------
     CheckPlayerCollisionLeft:
-        CheckPlayerCollisionLeftStart:  ;add edge screen detect
+        CheckPlayerCollisionLeftStart:
             PHA
             TXA
             PHA
             LDA playerdata+Entity::xpos
-            CMP #$00
+            CMP #$00                    ;left screen edge detect
             BNE ContinueGettingXL
             JMP ReturnSolidL
         ContinueGettingXL:
@@ -2061,8 +2082,8 @@ PlayerCollisionDetection:
             LSR
             LSR
             LSR
-            LSR
-            STA colltemp1
+            LSR                     ;metaX
+            STA colltemp1           ;colltemp1 holds metaX
             LDA playerdata+Entity::ypos
             LSR
             LSR
@@ -2070,7 +2091,7 @@ PlayerCollisionDetection:
             LSR     ;meta y
         CheckY2L:   ;check this first. yes i know it's backwards
             ASL
-            ASL
+            ASL     ;shift back two to set as "row" in the collision map
             CLC
             ADC colltemp1   ;Add x byte to Y byte to find byte location in collmap
             STA colltemp2   ;Location of player byte in coll map
@@ -2093,7 +2114,11 @@ PlayerCollisionDetection:
             INC checkvar
             ;find bit pair
         ContinueCheckL:
-            LDA playerdata+Entity::metax
+            LDA playerdata+Entity::xpos
+            LSR
+            LSR
+            LSR
+            LSR     ;"meta x"
             AND #%00000011
             CMP #$00
             BEQ MaskOutZeroL
@@ -2225,7 +2250,11 @@ PlayerCollisionDetection:
             INC checkvar
             ;find bit pair
         ContinueCheckR:
-            LDA playerdata+Entity::metax
+            LDA playerdata+Entity::xpos
+            LSR
+            LSR
+            LSR
+            LSR     ;"meta x"
             CLC
             ADC #$01
             AND #%00000011
@@ -3199,6 +3228,8 @@ VState2:
     LDA timer
     CMP #$00
     BNE JumpToReturnVC
+    ;SFX for lava rumble
+
     LDA #$03            ;Advance to state3
     STA colltemp1
     LDA #$00
