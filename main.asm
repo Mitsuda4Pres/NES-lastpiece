@@ -1,7 +1,7 @@
 ;TODO:
 
-;1/22/26 Order of attack:git ad
-    ;Fix CollisionUp bug that moves player over by 1px
+;1/22/26 Order of attack:
+    ;Add lava sfx on piece acquisition and final cutscene
     ;Lock in music
     
     
@@ -15,6 +15,7 @@
     ;Get all math out of NMI, only spritemem copy to OAMDMA
     ;This should fix my screen shake, if not, fix screen shake
     ;This should handle graphical bugs when lava is on screen
+    ;Add lava sfx on piece acquisition and final cutscene
 
 
 .include "famistudio_ca65.s"
@@ -1199,9 +1200,6 @@ HandleSolidUp:
     CLC
     ADC #$10
     STA playerdata+Entity::ypos
-    ;Set xpos back to starting xpos of frame bc HandleSolidLeft or Right has pushed it
-    ;LDA framestartxpos
-    ;STA playerdata+Entity::xpos
     JMP EndProcessPlayer
 HandleDamagingUp:
     LDA playerdata+Entity::state
@@ -3233,6 +3231,11 @@ VState2:
     STA colltemp1
     LDA #$00
     STA colltemp2
+    ;Play lava rumble sfx again
+    LDA #$04            ;SFX #05 into A register (climb sound)
+    LDX #FAMISTUDIO_SFX_CH0
+    JSR famistudio_sfx_play
+
     LDA #$AB
     STA timer
     JMP CopyPDtoEBLoopC
