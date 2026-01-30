@@ -1,6 +1,6 @@
 ;TODO:
 
-;1/22/26 Order of attack:
+;1/22/26 Order of attack:git ad
     ;Fix CollisionUp bug that moves player over by 1px
     ;Lock in music
     
@@ -1200,8 +1200,8 @@ HandleSolidUp:
     ADC #$10
     STA playerdata+Entity::ypos
     ;Set xpos back to starting xpos of frame bc HandleSolidLeft or Right has pushed it
-    LDA framestartxpos
-    STA playerdata+Entity::xpos
+    ;LDA framestartxpos
+    ;STA playerdata+Entity::xpos
     JMP EndProcessPlayer
 HandleDamagingUp:
     LDA playerdata+Entity::state
