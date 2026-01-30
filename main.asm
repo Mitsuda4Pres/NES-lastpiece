@@ -1,15 +1,17 @@
 ;TODO:
 
-;1/22/26 Order of attack:
-    ;Add lava sfx on piece acquisition and final cutscene
+;1/22/26 Order of attack:git ad
+    ;Fix CollisionUp bug that moves player over by 1px
     ;Lock in music
     
-    ;Consider fixing 1-tile width "vibrate" issue
+    
 
 
 ;DONE LIST:
     ;DONE!!! - 1/27/26 Handle side jumping collision bug (jumping sideways through a one tile opening. Maybe avoid that case altogether. Does he still jump through solid walls?)
+    ;DONE - ;Consider fixing 1-tile width "vibrate" issue, fixed by above fix
     ;DONE!! - 1/22/26 Fix left approaching collision bug
+    ;DONE - ;Add lava sfx on piece acquisition and final cutscene
     ;Get all math out of NMI, only spritemem copy to OAMDMA
     ;This should fix my screen shake, if not, fix screen shake
     ;This should handle graphical bugs when lava is on screen
@@ -142,6 +144,7 @@ colltemp1:          .res 1
 colltemp2:          .res 1
 colltemp3:          .res 1
 collreturnval:      .res 1
+framestartxpos:     .res 1
 sfxloopcount:       .res 1
 animaframes:        .res 1
 totalsprites:       .res 1
@@ -693,6 +696,9 @@ finishcontrols: ;if on title screen, skip game logic
     JMP waitfordrawtocomplete
 
 processplayer:
+SetStartingXpos:
+    LDA playerdata+Entity::xpos
+    STA framestartxpos
 CheckHealth:
     LDA playerdata+Entity::health
     CMP #$01
@@ -1162,10 +1168,6 @@ HandleClimbableRight:
 
     JMP ProcessUp
 HandleSolidRight:
-    ;LDA playerdata+Entity::state
-    ;AND #%11111101  ;turn of walk
-    ;ORA #%00000001  ;turn on stand
-    ;STA playerdata+Entity::state
     DEC playerdata+Entity::xpos
 
 ProcessUp:
@@ -1197,6 +1199,9 @@ HandleSolidUp:
     CLC
     ADC #$10
     STA playerdata+Entity::ypos
+    ;Set xpos back to starting xpos of frame bc HandleSolidLeft or Right has pushed it
+    ;LDA framestartxpos
+    ;STA playerdata+Entity::xpos
     JMP EndProcessPlayer
 HandleDamagingUp:
     LDA playerdata+Entity::state
@@ -5610,7 +5615,7 @@ CONTENTS0:
     .byte $4C     ;offset to palette map
     .byte $8C   ;offset to block table
 ENTS0:
-    .byte $84, $00       ;snake at (8, 4)
+    .byte $84, $04       ;snake at (8, 4)
     ;.byte $52, $00    ;DEBUG: the last piece @ (15,14)    
     .byte $2D, $04
     .byte $FF           ;end of list
