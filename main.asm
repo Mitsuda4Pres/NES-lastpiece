@@ -1,11 +1,9 @@
 ;TODO:
 
 ;1/22/26 Order of attack:
+
     ;Add lava sfx on piece acquisition and final cutscene
     ;Lock in music
-    
-    
-
 
 ;DONE LIST:
     ;DONE!!! - 1/27/26 Handle side jumping collision bug (jumping sideways through a one tile opening. Maybe avoid that case altogether. Does he still jump through solid walls?)
@@ -285,8 +283,9 @@ INITIALIZETITLESCREEN:
     STA bgpalette
     JSR LoadSingleAttributes
     JSR DrawText
-    ;LDA #$04
-    ;JSR famistudio_music_play
+    ;"Going in" title screen music
+    LDA #$00
+    JSR famistudio_music_play
 
 ;Clear register and set palette address
 INITPALETTE:
@@ -411,7 +410,8 @@ HandleGameOver:
         STA ptr           ;utilize block table pointer for text load
         LDA #>GAMEOVERSCREEN
         STA ptr+1
-        LDA #$00
+        ;"Game Over" music
+        LDA #$03
         JSR famistudio_music_play
         JSR InitializeAltScreen
         JMP waitfordrawtocomplete
@@ -437,7 +437,8 @@ HandleCutscene:          ;make sure relevant variables, esp custceneid, for a sc
         STA gamestate
         LDA #$00        ;restore original palette
         STA bgpalette
-        LDA #$01
+        ;"Going Up" escape music
+        LDA #$02
         JSR famistudio_music_play
         ;TODO this write should happen in NMI
         LDA $2002
@@ -640,7 +641,8 @@ checkstart:
     BEQ loadmaingame
     JMP checka  ;eventually put PAUSE function here
 loadmaingame:
-    LDA #$01
+    ;Stop title music
+    ;LDA #$00
     JSR famistudio_music_stop
 
     LDA #$07
@@ -999,7 +1001,7 @@ HandleGetTreasure: ;How to handle multiple treasures on one stage? Not needed fo
     LDA #$04
     STA gamestate
         ;play lava rumble sfx
-    LDA #$02
+    ;LDA #$02
     JSR famistudio_music_stop
     LDA #$04            ;SFX #05 into A register (climb sound)
     LDX #FAMISTUDIO_SFX_CH0
@@ -1103,7 +1105,7 @@ Dead:
     LDA #$03
     STA gamestate
     ;Play dead sfx here
-    LDA #$01
+    ;LDA #$01
     JSR famistudio_music_stop
     LDA #$02
     LDX #FAMISTUDIO_SFX_CH0
@@ -1632,9 +1634,10 @@ SCREENTRANLOOP:
         LDA lastpiece
         CMP #$01
         BNE LoadNormalGame
-        LDA lavaactive
-        CMP #$01
-        BEQ LoadNormalGame  ;don't go into lava state if lava already active
+
+        ;LDA lavaactive
+        ;CMP #$01
+        ;BEQ LoadNormalGame  ;don't go into lava state if lava already active
 
         ;restart lava from bottom on next screen if lava is active
         LDA #$00
@@ -3319,7 +3322,7 @@ ClearZeroPageVC:
     STA $00, x
     INX
     BNE ClearZeroPageVC
-    LDA #$01
+    ;LDA #$01
     JSR famistudio_music_stop
     LDA #<VICTORYSCREEN
     STA ptr           ;utilize block table pointer for text load
@@ -3754,7 +3757,8 @@ InitializePlayer:
     LDA #$02
     STA spritemem+1
 InitializeMusic:
-    LDA #$02
+    ;"Going Down" main level music
+    LDA #$01
     JSR famistudio_music_play
 
     PLA
