@@ -1,11 +1,13 @@
 ;TODO:
 
 ;1/22/26 Order of attack:
-
-    ;Add lava sfx on piece acquisition and final cutscene
+    ;Add in ending music
+    ;ClimbUp pushing left and right is a problem not just when jjumping but when climbing vines
+    ;Kill snakes when lava hits them.
     ;Lock in music
 
 ;DONE LIST:
+    ;DONE!!: - Render fail after lava burst on victory cutsene
     ;DONE!!! - 1/27/26 Handle side jumping collision bug (jumping sideways through a one tile opening. Maybe avoid that case altogether. Does he still jump through solid walls?)
     ;DONE - ;Consider fixing 1-tile width "vibrate" issue, fixed by above fix
     ;DONE!! - 1/22/26 Fix left approaching collision bug
@@ -1635,9 +1637,18 @@ SCREENTRANLOOP:
         CMP #$01
         BNE LoadNormalGame
 
-        ;LDA lavaactive
-        ;CMP #$01
-        ;BEQ LoadNormalGame  ;don't go into lava state if lava already active
+        ;Must turn off lavaactive before entering final screen
+        LDA lavaactive
+        CMP #$01
+        BNE LoadNormalGame  ;don't go into lava state if lava already active
+
+        ;Or perhaps one more pass to check for victory condition?
+        ;kaeru
+        LDY #$00
+        LDA (level+Area::selfaddr1), y  ;reference the new currrent level's "self address" for if player has reached top
+        CMP #$04
+        BEQ LoadNormalGame
+
 
         ;restart lava from bottom on next screen if lava is active
         LDA #$00
@@ -3175,6 +3186,13 @@ VictoryCutscene:    ;timer will run still
     PHA
     LDX #$00
     LDY #$00
+    LDA gamestate
+    CMP #$08
+    BEQ TurnOffLavaVC
+    JMP CheckAnimationState
+TurnOffLavaVC:
+    LDA #$04
+    STA gamestate 
 CheckAnimationState:
     LDA colltemp1
     CMP #00
@@ -3294,12 +3312,8 @@ AdvanceToVState4:
     STA bgpalette
     LDA #$01
     STA paletteshakeactive
-    ;LDA $2002
-    ;LDA #$23
-    ;STA $2006           ;PPUADDR      nametable1 attribute layer
-    ;LDA #$C0
-    ;STA $2006           ;PPUADDR
-    ;JSR LoadSingleAttributes
+    JSR famistudio_music_stop
+
     LDA #$04
     STA colltemp1
     LDA playerdata+Entity::state
@@ -5622,7 +5636,7 @@ CONTENTS0:
     .byte $4C     ;offset to palette map
     .byte $8C   ;offset to block table
 ENTS0:
-    .byte $84, $04       ;snake at (8, 4)
+    .byte $84, $00       ;snake at (8, 4)
     ;.byte $52, $00    ;DEBUG: the last piece @ (15,14)    
     .byte $2D, $04
     .byte $FF           ;end of list
