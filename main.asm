@@ -1,12 +1,17 @@
 ;TODO:
 
 ;1/22/26 Order of attack:
-    ;Add in ending music
-    ;ClimbUp pushing left and right is a problem not just when jjumping but when climbing vines
-    ;Kill snakes when lava hits them.
-    ;Lock in music
+    ;Drop to itch!
 
 ;DONE LIST:
+    ;DONE!!! - not enough RAM was attributed to SRAM in nes.cfg, so famistudio_sfx was overflowing into AREABANK
+        ;Increased lava in previous area creates potential rendering issues in next,
+        ;Only happens when a snake dies ending cutscene is jacked up.
+        ;Doesn't even make it to HandleCutscene. Gamestate gets reset to 00/01
+
+    ;DONE - Kill snakes when lava hits them
+    ;DONE - ClimbUp pushing left and right is a problem not just when jjumping but when climbing vines (Needed to processUp and Down collisions before left and right)
+    ;DONE - Add in ending music
     ;DONE!!: - Render fail after lava burst on victory cutsene
     ;DONE!!! - 1/27/26 Handle side jumping collision bug (jumping sideways through a one tile opening. Maybe avoid that case altogether. Does he still jump through solid walls?)
     ;DONE - ;Consider fixing 1-tile width "vibrate" issue, fixed by above fix
@@ -927,6 +932,7 @@ CheckCollisions:;check for collisions from new position
     LDA gamestate           ;check lava first
     CMP #$08
     BNE ProcessCollisions
+CheckAgainstLava:
     LDA lavacounter
     ASL
     ASL
@@ -1129,52 +1135,6 @@ CheckOver:
     STA collreturnval
 
     JSR CheckPlayerCollisionOver
-ProcessLeft:
-    LDA playerdata+Entity::movedir
-    AND #%00000001      ;mask out all but l/r bit
-    CMP #$00
-    BNE ProcessRight     ;kaeru, HandleClimbableLeft?
-    JSR CheckPlayerCollisionLeft
-    LDA collreturnval
-    AND #%00001100
-    CMP #%00001000      ;Climbable
-    BEQ HandleClimbableLeft
-    CMP #%00000100      ;solid
-    BEQ HandleSolidLeft
-    JMP ProcessRight
-HandleClimbableLeft:
-    ;no left exits yet
-    LDA #$01
-    STA playerdata+Entity::env
-    JMP ProcessRight
-HandleSolidLeft:
-    ;LDA playerdata+Entity::state
-    ;AND #%11111101  ;turn of walk
-    ;ORA #%00000001  ;turn on stand
-    ;STA playerdata+Entity::state
-    INC playerdata+Entity::xpos
-ProcessRight:
-    LDA playerdata+Entity::movedir
-    AND #%00000001      ;mask out all but l/r bit
-    CMP #$01
-    BNE ProcessUp       ;kaeru, maybe I need to branch to HandleClimbableRight?
-    JSR CheckPlayerCollisionRight  
-    LDA collreturnval
-    AND #%00000011
-    CMP #%00000010      ;Climbable
-    BEQ HandleClimbableRight
-    CMP #%00000001      ;solid
-    BEQ HandleSolidRight
-    JMP ProcessUp
-HandleClimbableRight:
-    ;No right exits yet
-    LDA #$01
-    STA playerdata+Entity::env
-
-    JMP ProcessUp
-HandleSolidRight:
-    DEC playerdata+Entity::xpos
-
 ProcessUp:
     JSR CheckPlayerCollisionUp    ;check upward collision every frame
     LDA collreturnval
@@ -1204,7 +1164,7 @@ HandleSolidUp:
     CLC
     ADC #$10
     STA playerdata+Entity::ypos
-    JMP EndProcessPlayer
+    JMP ProcessDown
 HandleDamagingUp:
     LDA playerdata+Entity::state
     AND #%00001000
@@ -1231,6 +1191,8 @@ HandleNothingUp:
     ;CMP #%00010000
     ;BNE ProcessDown
     ;INC playerdata+Entity::ypos
+
+
 ProcessDown:
     JSR CheckPlayerCollisionDown    ;check downward collision every frame
     LDA collreturnval
@@ -1253,7 +1215,7 @@ KeepClimbingDown:
     AND #%11011000      ;turn off fall, jump, walk, stand
     ORA #%00010000
     STA playerdata+Entity::state
-    JMP EndProcessPlayer
+    JMP ProcessLeft
 HandleSolidDown:
     LDA playerdata+Entity::state
     AND #%11001011  ;turn off fall, climb, and jump
@@ -1264,20 +1226,68 @@ HandleSolidDown:
     STA playerdata+Entity::ypos
     LDA #$00
     STA playerdata+Entity::velocity
-    JMP EndProcessPlayer
+    JMP ProcessLeft
 HandleNothingDown:
     LDA playerdata+Entity::state
     TAX
     AND #%00000100
     CMP #%00000100
-    BEQ EndProcessPlayer
+    BEQ ProcessLeft
     TXA
     AND #%00010000
-    BNE EndProcessPlayer
+    BNE ProcessLeft
     TXA
     AND #%11101100      ;turn off climb, jump, stand
     ORA #%00100000      ;turn on falling
     STA playerdata+Entity::state
+
+ProcessLeft:
+    LDA playerdata+Entity::movedir
+    AND #%00000001      ;mask out all but l/r bit
+    CMP #$00
+    BNE ProcessRight     ;kaeru, HandleClimbableLeft?
+    JSR CheckPlayerCollisionLeft
+    LDA collreturnval
+    AND #%00001100
+    CMP #%00001000      ;Climbable
+    BEQ HandleClimbableLeft
+    CMP #%00000100      ;solid
+    BEQ HandleSolidLeft
+    JMP ProcessRight
+HandleClimbableLeft:
+    ;no left exits yet
+    LDA #$01
+    STA playerdata+Entity::env
+    JMP ProcessRight
+HandleSolidLeft:
+    ;LDA playerdata+Entity::state
+    ;AND #%11111101  ;turn of walk
+    ;ORA #%00000001  ;turn on stand
+    ;STA playerdata+Entity::state
+    INC playerdata+Entity::xpos
+
+ProcessRight:
+    LDA playerdata+Entity::movedir
+    AND #%00000001      ;mask out all but l/r bit
+    CMP #$01
+    BNE EndProcessPlayer       ;kaeru, maybe I need to branch to HandleClimbableRight?
+    JSR CheckPlayerCollisionRight  
+    LDA collreturnval
+    AND #%00000011
+    CMP #%00000010      ;Climbable
+    BEQ HandleClimbableRight
+    CMP #%00000001      ;solid
+    BEQ HandleSolidRight
+    JMP EndProcessPlayer
+HandleClimbableRight:
+    ;No right exits yet
+    LDA #$01
+    STA playerdata+Entity::env
+
+    JMP EndProcessPlayer
+HandleSolidRight:
+    DEC playerdata+Entity::xpos
+
 EndProcessPlayer:
 FindMetaPosition: ;problem - xpos hasn't been "reset" based on collision, so metax increases while button is held down
     LDA playerdata+Entity::xpos
@@ -1345,6 +1355,39 @@ CheckSnake:
     LDA entitybuffer+Entity::type
     CMP #EntityType::Snake
     BNE JumpToNextEnemyType
+CheckSnakeIsDead:
+    LDA entitybuffer+Entity::state
+    AND #%11110111  ;check dead state
+    CMP #%00001000
+    BEQ JumpToFinishSnake
+    JMP CheckSnakeLavaCollision
+JumpToFinishSnake:
+    JMP FinishSnake
+CheckSnakeLavaCollision:
+    LDA lavacounter
+    ASL
+    ASL
+    ASL ;multiply by 8 for "lava layer" size
+    STA colltemp1
+    LDA #$F0    ;240, bottom of screen
+    SEC
+    SBC colltemp1 ;240 - (# of lava rows * 8px)
+    STA colltemp1 ;real y position of lava surface
+    SEC
+    SBC #$0F    ;Height of metatile
+    SEC
+    SBC entitybuffer+Entity::ypos   ;snake y-pos
+    BCS CheckSnakeState      ;No hit if carry set. If Carry is reset, lava is "higher" than snake y-pos+snake height, snake is hit.
+HandleSnakeLavaHit:
+    ;kaeru
+    ;Play damage SFX
+    LDA #$01
+    JSR famistudio_sfx_play
+
+    LDA entitybuffer+Entity::state
+    ORA #%00001000
+    STA entitybuffer+Entity::state  ;make snake dead
+CheckSnakeState:
     LDA entitybuffer+Entity::state
     LSR
     BCS SnakeWalkProcess    ;If low bit is set, Process walk
@@ -3313,7 +3356,6 @@ AdvanceToVState4:
     LDA #$01
     STA paletteshakeactive
     JSR famistudio_music_stop
-
     LDA #$04
     STA colltemp1
     LDA playerdata+Entity::state
@@ -3337,7 +3379,8 @@ ClearZeroPageVC:
     INX
     BNE ClearZeroPageVC
     ;LDA #$01
-    JSR famistudio_music_stop
+    LDA #$04
+    JSR famistudio_music_play
     LDA #<VICTORYSCREEN
     STA ptr           ;utilize block table pointer for text load
     LDA #>VICTORYSCREEN
@@ -4186,13 +4229,32 @@ WriteMetatilesToRAM:
         LDA ENTITIES, x     ;type
         CMP #$00            ;type nothing
         BEQ AdvanceToNextEntity
-        JMP ContinueCurrentEntity
+        CMP #$03 ;Snake
+        BNE ContinueCurrentEntity
+        ;check state of current entity, if dead no draw
+    CheckEnemyDeadState:
+        TXA     ;store current entitybuffer indexer
+        PHA     ;No PHX in ca65
+        CLC
+        ADC #$03 ;Entity::state       ;offset to state var
+        TAX
+        LDA ENTITIES, x
+        AND #%00001000
+        CMP #%00001000
+        BEQ PullXBeforeAdvancing
+        JMP PullXBeforeContinueCurrent
+    PullXBeforeAdvancing:
+        PLA
+        TAX
     AdvanceToNextEntity:
         TXA
         CLC
         ADC #$0C
         TAX
         JMP BeginLoadEntityLoop
+    PullXBeforeContinueCurrent:
+        PLA
+        TAX
     ContinueCurrentEntity:
         INX ;go past type
         LDA ENTITIES, x     ;xpos
@@ -4427,8 +4489,8 @@ SetupNextArea:  ;gets pointer data from ROM (AREA0, AREA1, ...) and stores it in
         INX
         LDA AREABANK, x
         STA nextarea+Area::selfaddr2
-        LDY #$07                            ;First byte of "contents" section in AREA array. Contains offset of the entities table
-        LDA (nextarea+Area::selfaddr1), y   ;get block table offset (probably $07)
+        LDY #$07                            
+        LDA (nextarea+Area::selfaddr1), y   ;First byte of "contents" section in AREA array. Contains offset of the entities table
         STA nextarea+Area::entaddr1          ;use as variable for a moment
         LDA nextarea+Area::selfaddr1
         CLC
@@ -5636,7 +5698,7 @@ CONTENTS0:
     .byte $4C     ;offset to palette map
     .byte $8C   ;offset to block table
 ENTS0:
-    .byte $84, $00       ;snake at (8, 4)
+    .byte $84, $04       ;snake at (8, 4)
     ;.byte $52, $00    ;DEBUG: the last piece @ (15,14)    
     .byte $2D, $04
     .byte $FF           ;end of list
